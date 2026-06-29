@@ -33,3 +33,4 @@ gripper_joint_names = [
 ]
 
 joint_names = leg_joint_names + wheel_joint_names
+nav2_path_dataset_dir: str = "/home/pavan/Downloads/SUTD/DesignProject/navrl-bench/m3_ros2_ws/src/nav_rl_bridge/rl_path_dataset/aws_warehouse"
