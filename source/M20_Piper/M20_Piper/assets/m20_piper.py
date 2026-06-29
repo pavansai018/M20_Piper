@@ -36,7 +36,7 @@ M20_PIPER_CFG = ArticulationCfg(
         
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.52,),
+        pos=(0.0, 0.0, 0.475,),
         joint_pos={
             '.*hipx_joint': 0.0,
             'f[l,r]_hipy_joint': -0.70,
