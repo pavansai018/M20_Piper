@@ -127,7 +127,7 @@ class ActionsCfg:
     joint_vel = mdp.JointVelocityActionCfg(
         asset_name="robot",
         joint_names=mdp.wheel_joint_names, # + mdp.leg_joint_names,
-        scale=5.0,
+        scale=2.0,
         use_default_offset=True,
         clip={".*": (-100.0, 100.0)},
         preserve_order=True,
@@ -154,12 +154,12 @@ class ObservationsCfg:
             clip=(-100.0, 100.0),
             scale=1.0,
         )
-        velocity_commands = ObsTerm(
-            func=mdp.generated_commands,
-            params={"command_name": "base_velocity"},
-            clip=(-100.0, 100.0),
-            scale=1.0,
-        )
+        # velocity_commands = ObsTerm(
+        #     func=mdp.generated_commands,
+        #     params={"command_name": "base_velocity"},
+        #     clip=(-100.0, 100.0),
+        #     scale=1.0,
+        # )
         # joint_pos = ObsTerm(
         #     func=mdp.joint_pos_rel_without_wheel,
         #     params={
@@ -421,8 +421,8 @@ class RewardsCfg:
 
     # Root penalties
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
-    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.002)
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=0.0)
+    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.5)
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-2.0)
     base_height_l2 = RewTerm(
         func=mdp.base_height_l2,
         weight=-0.5,
@@ -545,7 +545,7 @@ class RewardsCfg:
     #         "asset_cfg": SceneEntityCfg("robot", joint_names=mdp.leg_joint_names),
     #     },
     # )
-    upward = RewTerm(func=mdp.upward, weight=0.08)
+    upward = RewTerm(func=mdp.upward, weight=1.0)
 
     # --- Path-following rewards ---
     path_progress = RewTerm(
