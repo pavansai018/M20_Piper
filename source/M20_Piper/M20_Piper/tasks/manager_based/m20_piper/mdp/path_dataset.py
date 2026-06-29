@@ -21,17 +21,33 @@ class Nav2PathDataset:
         self.device = device
         self.max_path_points = max_path_points
 
-        self.files = sorted(self.dataset_dir.glob("path_*.npz"))
-        if not self.files:
+        files = sorted(self.dataset_dir.glob("path_*.npz"))
+        if not files:
             raise RuntimeError(f"No path_*.npz files found in {self.dataset_dir}")
 
+        # Pre-load all paths into RAM so sample_batch never hits disk.
+        # For a typical dataset of 100-1000 paths × 600 points this is <50 MB.
+        self._cache: list[dict] = []
+        for f in files:
+            data = np.load(f)
+            xy = data["path_xy"].astype(np.float32)
+            diff = xy[1:] - xy[:-1]
+            length = float(np.linalg.norm(diff, axis=1).sum()) if len(xy) > 1 else 0.0
+            self._cache.append({
+                "start":       data["start"].astype(np.float32),
+                "goal":        data["goal"].astype(np.float32),
+                "path_xy":     xy,
+                "path_length": float(data["path_length"][0]) if "path_length" in data else length,
+            })
+        print(f"[Nav2PathDataset] Loaded {len(self._cache)} paths into RAM.")
+
     def __len__(self) -> int:
-        return len(self.files)
+        return len(self._cache)
 
     def sample_batch(
         self, env_ids: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Randomly sample one path per env_id.
+        """Randomly sample one path per env_id from in-memory cache (no disk I/O).
 
         Returns:
             starts        [N, 3]               — (x, y, yaw) per env
@@ -42,31 +58,22 @@ class Nav2PathDataset:
         """
         num = len(env_ids)
         starts = torch.zeros(num, 3, device=self.device)
-        goals = torch.zeros(num, 3, device=self.device)
-        paths = torch.zeros(num, self.max_path_points, 2, device=self.device)
+        goals  = torch.zeros(num, 3, device=self.device)
+        paths  = torch.zeros(num, self.max_path_points, 2, device=self.device)
         valid_counts = torch.zeros(num, dtype=torch.long, device=self.device)
         path_lengths = torch.zeros(num, device=self.device)
 
-        file_indices = torch.randint(len(self.files), (num,)).cpu().numpy()
+        indices = torch.randint(len(self._cache), (num,)).tolist()
 
-        for i, file_idx in enumerate(file_indices):
-            data = np.load(self.files[int(file_idx)])
+        for i, idx in enumerate(indices):
+            entry   = self._cache[idx]
+            path_xy = entry["path_xy"]          # numpy [K, 2], already float32
+            n       = min(len(path_xy), self.max_path_points)
 
-            start = data["start"].astype(np.float32)     # [3]
-            goal = data["goal"].astype(np.float32)       # [3]
-            path_xy = data["path_xy"].astype(np.float32) # [K, 2]
-
-            n = min(len(path_xy), self.max_path_points)
-
-            starts[i] = torch.tensor(start, device=self.device)
-            goals[i] = torch.tensor(goal, device=self.device)
-            paths[i, :n] = torch.tensor(path_xy[:n], device=self.device)
+            starts[i]       = torch.from_numpy(entry["start"]).to(self.device)
+            goals[i]        = torch.from_numpy(entry["goal"]).to(self.device)
+            paths[i, :n]    = torch.from_numpy(path_xy[:n]).to(self.device)
             valid_counts[i] = n
-
-            if "path_length" in data:
-                path_lengths[i] = float(data["path_length"][0])
-            else:
-                diff = path_xy[1:] - path_xy[:-1]
-                path_lengths[i] = float(np.linalg.norm(diff, axis=1).sum())
+            path_lengths[i] = entry["path_length"]
 
         return starts, goals, paths, valid_counts, path_lengths

@@ -78,10 +78,21 @@ def _robot_yaw(env: Any, asset_name: str = "robot") -> torch.Tensor:
 
 
 def _nearest_path_index(env: Any) -> torch.Tensor:
-    """
-    Brute-force nearest-neighbour search across path points.
+    """Brute-force nearest-neighbour search across path points, cached per step.
+
+    Called up to 9 times per step (2× policy obs + 2× critic obs + 3× rewards).
+    Without caching each call allocates ~29 MB of GPU temporaries; the CUDA
+    caching allocator pool grows over time causing steadily increasing iteration
+    time.  One result per sim-step is sufficient since physics state doesn't
+    change between observation and reward calls within the same step.
+
     Returns indices of shape [num_envs] (long).
     """
+    # env.common_step_counter is a Python int incremented each env.step() — no GPU sync.
+    step = env.common_step_counter
+    if getattr(env, "_navrl_nearest_step", -1) == step:
+        return env._navrl_nearest_result  # type: ignore[return-value]
+
     path = env.navrl_global_path_xy           # [num_envs, max_pts, 2]
     valid = env.navrl_path_valid_count        # [num_envs]
     robot_xy = _robot_xy_local(env)           # [num_envs, 2]
@@ -92,7 +103,10 @@ def _nearest_path_index(env: Any) -> torch.Tensor:
     mask = torch.arange(max_pts, device=env.device).unsqueeze(0) >= valid.unsqueeze(1)
     dists = dists.masked_fill(mask, 1e6)
 
-    return torch.argmin(dists, dim=1)  # [num_envs]
+    result = torch.argmin(dists, dim=1)  # [num_envs]
+    env._navrl_nearest_step   = step
+    env._navrl_nearest_result = result
+    return result
 
 
 def _wrap_to_pi(angle: torch.Tensor) -> torch.Tensor:

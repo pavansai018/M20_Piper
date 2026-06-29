@@ -753,8 +753,11 @@ def arm_obstacle_controller(
 
     # --- Smooth arm joint targets -------------------------------------------
     default_pos = asset.data.default_joint_pos[:, arm_ids]
-    extend_pose = _ARM_EXTEND_POSE.to(env.device).unsqueeze(0).expand(env.num_envs, -1)
-    sweep_pose  = _ARM_SWEEP_POSE.to(env.device).unsqueeze(0).expand(env.num_envs, -1)
+    if not hasattr(e, "_arm_extend_pose_gpu"):
+        e._arm_extend_pose_gpu = _ARM_EXTEND_POSE.to(env.device).unsqueeze(0).expand(env.num_envs, -1).contiguous()
+        e._arm_sweep_pose_gpu  = _ARM_SWEEP_POSE.to(env.device).unsqueeze(0).expand(env.num_envs, -1).contiguous()
+    extend_pose = e._arm_extend_pose_gpu
+    sweep_pose  = e._arm_sweep_pose_gpu
 
     t_ext = (e._arm_phase_timer / extend_duration_s).clamp(0.0, 1.0).unsqueeze(1)
     t_sw  = (e._arm_phase_timer / sweep_duration_s).clamp(0.0, 1.0).unsqueeze(1)
