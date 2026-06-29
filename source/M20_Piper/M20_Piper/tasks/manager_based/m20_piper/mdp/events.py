@@ -144,7 +144,7 @@ def bad_orientation_2(
     # after each episode reset before we start checking orientation.
     settling = env.episode_length_buf < 10
     asset: RigidObject = env.scene[asset_cfg.name]
-    bad = (asset.data.projected_gravity_b[:, 2] > 0) | (asset.data.projected_gravity_b[:, :2].abs() > 0.7).any(-1)
+    bad = (asset.data.projected_gravity_b[:, 2] > 0) | (asset.data.projected_gravity_b[:, :2].abs() > 0.9).any(-1)
     return bad & ~settling
 
 
