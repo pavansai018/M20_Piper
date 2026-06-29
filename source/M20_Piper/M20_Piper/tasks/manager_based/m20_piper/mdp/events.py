@@ -193,6 +193,16 @@ _LIDAR_MAX_RANGE  = 5.0    # max sensing distance (m)
 _OBS_HX = 0.20
 _OBS_HY = 0.20
 
+# Detection ray constants — cached at module level to avoid per-call GPU allocations.
+# Recomputed lazily on first call and reused thereafter (device is fixed per process).
+import math as _math
+_DETECT_CP = _math.cos(_math.radians(_LIDAR_PITCH_DEG))   # cos of lidar pitch
+_DETECT_SP = _math.sin(_math.radians(_LIDAR_PITCH_DEG))   # sin of lidar pitch
+_DETECT_K  = 11                                            # number of detection rays
+# Per-device caches for tensors that don't change between calls
+_DETECT_OFFSETS_CACHE: dict = {}   # device → [K] azimuth offsets tensor
+_DETECT_HALF_EXT_CACHE: dict = {}  # (device, obs_hx, obs_hy, obs_hz) → [3] tensor
+
 
 def _lidar_ray_dir(yaw: float, azimuth_offset_deg: float, pitch_deg: float):
     """Compute a normalised ray direction for a tilted lidar.
@@ -257,12 +267,11 @@ def _detect_obstacle_batch(
     """Fully GPU-vectorised ray-AABB forward-lidar detection.
 
     Processes all IDLE envs and all K detection rays simultaneously as batched
-    tensor ops — no Python loops, runs in <1 ms for 4096 envs on any GPU.
+    tensor ops — no Python loops, no per-call small tensor allocations,
+    no boolean-index GPU syncs.  Runs in <1 ms for 4096 envs on any GPU.
 
     Returns detected: [N] bool tensor.
     """
-    import math as _m
-
     device   = robot_pos_w.device
     detected = torch.zeros(robot_pos_w.shape[0], dtype=torch.bool, device=device)
 
@@ -285,34 +294,45 @@ def _detect_obstacle_batch(
         rp[:, 2] + _LIDAR_Z_OFFS,
     ], dim=1)  # [M, 3]
 
-    # --- K ray directions in world frame (GPU, no Python loop) ------------
-    half_fov = _m.atan2(detection_lat_half, detection_range)   # radians
-    K        = 11
-    offsets  = torch.linspace(-half_fov, half_fov, K, device=device)  # [K]
-
-    cp = _m.cos(_m.radians(_LIDAR_PITCH_DEG))
-    sp = _m.sin(_m.radians(_LIDAR_PITCH_DEG))
+    # --- K ray directions — cached tensors, no per-call allocation ---------
+    K = _DETECT_K
+    dev_key     = str(device)
+    offsets_key = (dev_key, detection_lat_half, detection_range)
+    if offsets_key not in _DETECT_OFFSETS_CACHE:
+        half_fov = _math.atan2(detection_lat_half, detection_range)
+        _DETECT_OFFSETS_CACHE[offsets_key] = torch.linspace(
+            -half_fov, half_fov, K, device=device
+        )
+    offsets = _DETECT_OFFSETS_CACHE[offsets_key]  # [K]
 
     a_world = yaw.unsqueeze(1) + offsets.unsqueeze(0)   # [M, K]
+    # dz component is the same for every ray — broadcast scalar instead of full()
     dirs = torch.stack([
-        torch.cos(a_world) * cp,                         # dx  [M, K]
-        torch.sin(a_world) * cp,                         # dy  [M, K]
-        torch.full((M, K), sp, device=device),           # dz  [M, K]
-    ], dim=2)                                            # [M, K, 3]
+        torch.cos(a_world) * _DETECT_CP,
+        torch.sin(a_world) * _DETECT_CP,
+        torch.full((M, K), _DETECT_SP, device=device),
+    ], dim=2)  # [M, K, 3]
 
-    # --- AABB slab intersection (GPU, all envs × all rays at once) --------
-    half_ext   = torch.tensor([obs_hx, obs_hy, obs_hz], device=device)
+    # --- AABB slab intersection — cached half_ext, no boolean-index sync ---
+    ext_key = (dev_key, obs_hx, obs_hy, obs_hz)
+    if ext_key not in _DETECT_HALF_EXT_CACHE:
+        _DETECT_HALF_EXT_CACHE[ext_key] = torch.tensor(
+            [obs_hx, obs_hy, obs_hz], device=device
+        )
+    half_ext = _DETECT_HALF_EXT_CACHE[ext_key]  # [3]
+
     obs_lo     = (op - half_ext).unsqueeze(1).expand(-1, K, -1)   # [M, K, 3]
     obs_hi     = (op + half_ext).unsqueeze(1).expand(-1, K, -1)   # [M, K, 3]
     sensor_exp = sensor.unsqueeze(1).expand(-1, K, -1)             # [M, K, 3]
 
-    safe_dirs = dirs.clone()
-    safe_dirs[dirs.abs() < 1e-9] = 1e-9
+    # torch.where avoids the boolean-index GPU sync that safe_dirs[mask] = val causes
+    _eps = torch.full_like(dirs, 1e-9)
+    safe_dirs = torch.where(dirs.abs() < 1e-9, _eps, dirs)
 
-    t0     = (obs_lo - sensor_exp) / safe_dirs   # [M, K, 3]
-    t1     = (obs_hi - sensor_exp) / safe_dirs   # [M, K, 3]
-    t_enter = torch.min(t0, t1).max(dim=2).values   # [M, K]
-    t_exit  = torch.max(t0, t1).min(dim=2).values   # [M, K]
+    t0      = (obs_lo - sensor_exp) / safe_dirs   # [M, K, 3]
+    t1      = (obs_hi - sensor_exp) / safe_dirs   # [M, K, 3]
+    t_enter = torch.min(t0, t1).max(dim=2).values  # [M, K]
+    t_exit  = torch.max(t0, t1).min(dim=2).values  # [M, K]
 
     hit_any = (
         (t_enter < t_exit) & (t_enter > 0.0) & (t_enter < detection_range)
@@ -329,123 +349,116 @@ def draw_path_debug(
     path_stride: int = 3,
     max_draw_envs: int = 4,
 ) -> None:
-    """Draw Nav2 global paths and goal points using Isaac Sim DebugDraw.
+    """Draw Nav2 global paths, goal dots, obstacle wireframe, and lidar rays.
 
-    Draws blue lines along path waypoints and a green dot at the goal.
-    Visual only — no physics bodies created.
+    All GPU tensors are transferred to CPU in a single batch before any Python
+    loop — no per-element GPU syncs that would stall training.
+    Exits immediately in headless mode (no visible output, just wasted time).
     """
     e: Any = env
     if not hasattr(e, "navrl_global_path_xy"):
         return
 
+    # Skip entirely when running headless — draw calls add significant overhead
+    # even with no display present.  Set /app/window/hideUi = false to visualise.
+    try:
+        import carb as _carb
+        if _carb.settings.get_settings().get_as_bool("/app/window/hideUi"):
+            return
+    except Exception:
+        pass
+
     draw = _get_debug_draw()
     _clear_debug_draw(draw)
 
     draw_ids = env_ids[: min(len(env_ids), max_draw_envs)]
+    n = len(draw_ids)
+    if n == 0:
+        return
 
-    # --- Path lines (blue) ---
+    # ---- Single batch GPU→CPU transfer for all draw envs -------------------
+    # Doing this once avoids per-element CUDA stream synchronisations inside
+    # the Python loops below (each float() on a GPU tensor is one sync ≈ 100 µs).
+    draw_ids_list = draw_ids.tolist()
+    origins_l = e.scene.env_origins[draw_ids, :2].cpu().tolist()          # [n, 2]
+    valids_l  = e.navrl_path_valid_count[draw_ids].cpu().tolist()          # [n]
+    goals_l   = e.navrl_final_goal_xy[draw_ids].cpu().tolist()             # [n, 2]
+
+    robot_asset: Articulation = env.scene[asset_cfg.name]
+    rp_l = robot_asset.data.root_pos_w[draw_ids].cpu().tolist()            # [n, 3]
+    q_l  = robot_asset.data.root_quat_w[draw_ids].cpu().tolist()           # [n, 4]
+
+    has_obs = "obstacle" in env.scene.rigid_objects
+    obs_l: list = []
+    if has_obs:
+        obs_l = env.scene.rigid_objects["obstacle"].data.root_pos_w[draw_ids].cpu().tolist()
+
+    # ---- Path lines (blue) -------------------------------------------------
     all_p0: list = []
     all_p1: list = []
-    for eid_t in draw_ids:
-        eid = int(eid_t.item())
-        origin = e.scene.env_origins[eid, :2]
-        valid = int(e.navrl_path_valid_count[eid].item())
+    for i, eid in enumerate(draw_ids_list):
+        valid = int(valids_l[i])
         if valid <= 1:
             continue
-        path_xy = e.navrl_global_path_xy[eid, :valid:path_stride]
-        world = path_xy + origin.unsqueeze(0)
-        for i in range(world.shape[0] - 1):
-            a = world[i]
-            b = world[i + 1]
-            all_p0.append((float(a[0]), float(a[1]), 0.12))
-            all_p1.append((float(b[0]), float(b[1]), 0.12))
+        ox, oy = origins_l[i]
+        # One GPU→CPU transfer per env (not per point)
+        pts = e.navrl_global_path_xy[eid, :valid:path_stride].cpu().tolist()
+        for k in range(len(pts) - 1):
+            all_p0.append((pts[k][0] + ox,   pts[k][1] + oy,   0.12))
+            all_p1.append((pts[k+1][0] + ox, pts[k+1][1] + oy, 0.12))
 
     if all_p0:
-        draw.draw_lines(
-            all_p0, all_p1,
-            [(0.0, 0.4, 1.0, 1.0)] * len(all_p0),
-            [3.0] * len(all_p0),
-        )
+        draw.draw_lines(all_p0, all_p1,
+                        [(0.0, 0.4, 1.0, 1.0)] * len(all_p0),
+                        [3.0] * len(all_p0))
 
-    # --- Goal dots (green) ---
-    goal_pts: list = []
-    for eid_t in draw_ids:
-        eid = int(eid_t.item())
-        origin = e.scene.env_origins[eid, :2]
-        g = e.navrl_final_goal_xy[eid] + origin
-        goal_pts.append((float(g[0]), float(g[1]), 0.35))
-
+    # ---- Goal dots (green) -------------------------------------------------
+    goal_pts = [
+        (goals_l[i][0] + origins_l[i][0], goals_l[i][1] + origins_l[i][1], 0.35)
+        for i in range(n)
+    ]
     if goal_pts:
-        draw.draw_points(
-            goal_pts,
-            [(0.0, 1.0, 0.0, 1.0)] * len(goal_pts),
-            [18.0] * len(goal_pts),
-        )
+        draw.draw_points(goal_pts,
+                         [(0.0, 1.0, 0.0, 1.0)] * n,
+                         [18.0] * n)
 
-    # --- Obstacle wireframe cuboid (orange) ---
-    if "obstacle" in env.scene.rigid_objects:
-        # Half-extents matching the CuboidCfg size (0.4 x 0.4 x 0.5 m)
+    # ---- Obstacle wireframe (orange) ---------------------------------------
+    if has_obs:
         hx, hy, hz = 0.20, 0.20, 0.25
-        # Local corner offsets for a box
-        _corners = [
-            (-hx, -hy, -hz), ( hx, -hy, -hz), ( hx,  hy, -hz), (-hx,  hy, -hz),
-            (-hx, -hy,  hz), ( hx, -hy,  hz), ( hx,  hy,  hz), (-hx,  hy,  hz),
-        ]
-        # 12 edges: bottom-face, top-face, 4 verticals
-        _edges = [
-            (0,1),(1,2),(2,3),(3,0),   # bottom
-            (4,5),(5,6),(6,7),(7,4),   # top
-            (0,4),(1,5),(2,6),(3,7),   # verticals
-        ]
+        _corners = [(-hx,-hy,-hz),(hx,-hy,-hz),(hx,hy,-hz),(-hx,hy,-hz),
+                    (-hx,-hy, hz),(hx,-hy, hz),(hx,hy, hz),(-hx,hy, hz)]
+        _edges   = [(0,1),(1,2),(2,3),(3,0),(4,5),(5,6),(6,7),(7,4),
+                    (0,4),(1,5),(2,6),(3,7)]
         box_p0: list = []
         box_p1: list = []
-        for eid_t in draw_ids:
-            eid = int(eid_t.item())
-            obs_w = env.scene.rigid_objects["obstacle"].data.root_pos_w[eid]
-            cx, cy, cz = float(obs_w[0]), float(obs_w[1]), float(obs_w[2])
-            world_c = [(cx+dx, cy+dy, cz+dz) for dx, dy, dz in _corners]
+        for i in range(n):
+            cx, cy, cz = obs_l[i]
+            wc = [(cx+dx, cy+dy, cz+dz) for dx, dy, dz in _corners]
             for a, b in _edges:
-                box_p0.append(world_c[a])
-                box_p1.append(world_c[b])
+                box_p0.append(wc[a])
+                box_p1.append(wc[b])
         if box_p0:
             draw.draw_lines(box_p0, box_p1,
                             [(1.0, 0.4, 0.0, 1.0)] * len(box_p0),
                             [2.5] * len(box_p0))
 
-    # --- Front lidar rays (ray-AABB simulation) ------------------------------
-    # M20 Lynx Pro front lidar: 270° FOV, 90 rays, 5 m range.
-    # Each ray is tested against the obstacle's bounding box using the same
-    # slab intersection that a real lidar driver would produce as /scan.ranges.
-    # Red = ray hits obstacle, faint green = clear.
+    # ---- Front lidar rays (ray-AABB, 270° FOV, 90 rays) -------------------
     import math as _math
-    _NUM_RAYS = 90
-    _FOV_DEG  = 270.0
-    _HALF_FOV = _FOV_DEG / 2.0
-    _angle_offsets = [_HALF_FOV - i * _FOV_DEG / (_NUM_RAYS - 1) for i in range(_NUM_RAYS)]
+    _angle_offsets = [135.0 - k * 270.0 / 89 for k in range(90)]
+    obs_hz = 0.25
 
-    if "obstacle" in env.scene.rigid_objects:
-        obstacle_obj = env.scene.rigid_objects["obstacle"]
-        obs_hz = 0.25   # half-height of obstacle (size z = 0.5 m)
+    if has_obs:
         ray_p0: list = []
         ray_p1: list = []
         ray_colors: list = []
-
-        for eid_t in draw_ids:
-            eid = int(eid_t.item())
-            robot_asset: Articulation = env.scene[asset_cfg.name]
-            rp  = robot_asset.data.root_pos_w[eid]
-            q   = robot_asset.data.root_quat_w[eid]
-            w_, x_, y_, z_ = float(q[0]), float(q[1]), float(q[2]), float(q[3])
+        for i in range(n):
+            w_, x_, y_, z_ = q_l[i]
             yaw = _math.atan2(2.0*(w_*z_ + x_*y_), 1.0 - 2.0*(y_*y_ + z_*z_))
-
-            # Sensor world position — matches front_lidar joint in URDF
-            lx  = float(rp[0]) + _LIDAR_FWD_X * _math.cos(yaw)
-            ly  = float(rp[1]) + _LIDAR_FWD_X * _math.sin(yaw)
-            lz  = float(rp[2]) + _LIDAR_Z_OFFS
-
-            op  = obstacle_obj.data.root_pos_w[eid]
-            cx, cy, cz = float(op[0]), float(op[1]), float(op[2])
-
+            rx, ry, rz = rp_l[i]
+            lx = rx + _LIDAR_FWD_X * _math.cos(yaw)
+            ly = ry + _LIDAR_FWD_X * _math.sin(yaw)
+            lz = rz + _LIDAR_Z_OFFS
+            cx, cy, cz = obs_l[i]
             for a_off in _angle_offsets:
                 dx, dy, dz = _lidar_ray_dir(yaw, a_off, _LIDAR_PITCH_DEG)
                 hit, dist  = _ray_aabb_hit(lx, ly, lz, dx, dy, dz,
@@ -453,11 +466,8 @@ def draw_path_debug(
                                            _OBS_HX, _OBS_HY, obs_hz,
                                            _LIDAR_MAX_RANGE)
                 ray_p0.append((lx, ly, lz))
-                ray_p1.append((lx + dx * dist, ly + dy * dist, lz + dz * dist))
-                ray_colors.append(
-                    (1.0, 0.1, 0.1, 0.9) if hit else (0.1, 0.85, 0.1, 0.12)
-                )
-
+                ray_p1.append((lx + dx*dist, ly + dy*dist, lz + dz*dist))
+                ray_colors.append((1.0, 0.1, 0.1, 0.9) if hit else (0.1, 0.85, 0.1, 0.12))
         if ray_p0:
             draw.draw_lines(ray_p0, ray_p1, ray_colors, [1.2] * len(ray_p0))
 
