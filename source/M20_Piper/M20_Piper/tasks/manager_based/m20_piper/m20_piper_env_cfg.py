@@ -330,15 +330,15 @@ class EventCfg:
     )
 
     # reset
-    randomize_apply_external_force_torque = EventTerm(
-        func=mdp.apply_external_force_torque,
-        mode="reset",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=[mdp.base_link_name]),
-            "force_range": (-10.0, 10.0),
-            "torque_range": (-10.0, 10.0),
-        },
-    )
+    # randomize_apply_external_force_torque = EventTerm(
+    #     func=mdp.apply_external_force_torque,
+    #     mode="reset",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=[mdp.base_link_name]),
+    #         "force_range": (-10.0, 10.0),
+    #         "torque_range": (-10.0, 10.0),
+    #     },
+    # )
     randomize_reset_joints = EventTerm(
         func=mdp.reset_joints_by_scale,
         mode="reset",
@@ -404,12 +404,12 @@ class EventCfg:
     )
 
     # interval
-    randomize_push_robot = EventTerm(
-        func=mdp.push_by_setting_velocity,
-        mode="interval",
-        interval_range_s=(10.0, 15.0),
-        params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
-    )
+    # randomize_push_robot = EventTerm(
+    #     func=mdp.push_by_setting_velocity,
+    #     mode="interval",
+    #     interval_range_s=(10.0, 15.0),
+    #     params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
+    # )
 
 
 @configclass
@@ -508,7 +508,7 @@ class RewardsCfg:
         func=mdp.undesired_contacts,
         weight=-1.0,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[f"^(?!.*{mdp.foot_link_name}).*"]),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[f"^(?!.*(_wheel|joint[1-8])).*"], ), # exclude wheels AND arm links
             "threshold": 1.0,
         },
     )
