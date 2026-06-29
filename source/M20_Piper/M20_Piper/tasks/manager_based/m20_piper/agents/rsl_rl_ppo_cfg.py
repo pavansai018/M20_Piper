@@ -15,7 +15,7 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     save_interval = 50
     experiment_name = "m20_piper"
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,
+        init_noise_std=0.3,
         actor_obs_normalization=False,
         critic_obs_normalization=False,
         actor_hidden_dims=[32, 32],

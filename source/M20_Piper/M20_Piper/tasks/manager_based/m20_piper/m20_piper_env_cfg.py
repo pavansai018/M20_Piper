@@ -287,7 +287,7 @@ class EventCfg:
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
             "static_friction_range": [0.35, 1.5],
             "dynamic_friction_range": [0.35, 1.5],
-            "restitution_range": [0.0, 0.7],
+            "restitution_range": [0.0, 0.1],
             "num_buckets": 1024,
         },
     )
