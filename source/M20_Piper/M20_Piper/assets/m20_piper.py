@@ -27,12 +27,12 @@ M20_PIPER_CFG = ArticulationCfg(
             solver_velocity_iteration_count=1,
         ),
 
-        # joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
-        #     gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(
-        #         stiffness=0,
-        #         damping=0,
-        #     ),
-        # ),
+        joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
+            gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(
+                stiffness=0,
+                damping=0,
+            ),
+        ),
         
     ),
     init_state=ArticulationCfg.InitialStateCfg(
@@ -43,7 +43,7 @@ M20_PIPER_CFG = ArticulationCfg(
             'h[l,r]_hipy_joint': 0.70,
             'f[l,r]_knee_joint': 1.4,
             'h[l,r]_knee_joint': -1.4,
-            '*.wheel_joint': 0.0,
+            '.*_wheel_joint': 0.0,
             'joint[1-8]':0.0,
         },
         joint_vel={'.*': 0.0,},

@@ -553,6 +553,33 @@
     <limit effort="21.6" velocity="79.3"/>
   </joint>
 
+  <!-- ======================================================================
+       FRONT LIDAR FRAME
+       Measure the physical lidar centre on the real M20 Lynx Pro and set
+       the xyz/rpy here.  The simulation code reads _LIDAR_FWD_X / _LIDAR_Z_OFFS
+       from mdp/events.py — keep them in sync with this joint's origin.
+
+       Current values are from the URDF body geometry:
+         x ≈ +0.37 m  (front face of chassis)
+         y =  0.00 m  (centred)
+         z ≈ +0.05 m  (slightly below top edge so rays point at obstacle height)
+       rpy:  0  0.12  0   (≈7° nose-down so horizontal sweep hits ~0.3 m below
+                           sensor at 1.5 m range — covers standard obstacle heights)
+       REPLACE WITH YOUR MEASURED VALUES before real deployment.
+  ======================================================================= -->
+  <link name="front_lidar">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.05 0.05 0.04"/></geometry>
+      <material name="lidar_black"><color rgba="0.1 0.1 0.1 1"/></material>
+    </visual>
+  </link>
+  <joint name="base_to_front_lidar" type="fixed">
+    <parent link="base_link"/>
+    <child link="front_lidar"/>
+    <origin xyz="0.37 0.0 0.05" rpy="0 0.12 0"/>
+  </joint>
+
   <joint name="base_to_arm" type="fixed">
     <parent link="base_link"/>
     <child link="arm_base_link"/>

@@ -13,7 +13,7 @@ from . import agents
 
 
 gym.register(
-    id="Template-M20-Piper-v0",
+    id="M20-Piper-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
