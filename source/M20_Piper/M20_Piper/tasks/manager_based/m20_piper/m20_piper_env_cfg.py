@@ -577,7 +577,7 @@ class TerminationsCfg:
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
     illegal_contact = DoneTerm(
         func=mdp.illegal_contact,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=mdp.base_link_name), "threshold": 1.0},
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=mdp.base_link_name), "threshold": 50.0},
     )
     bad_orientation_2 = DoneTerm(func=mdp.bad_orientation_2)
     goal_reached = DoneTerm(
@@ -601,7 +601,7 @@ class M20PiperEnvCfg(ManagerBasedRLEnvCfg):
     # curriculum: CurriculumCfg = CurriculumCfg()  # enable after terrain is added
 
     # Directory containing path_*.npz files for path tracking.
-    nav2_path_dataset_dir: str = "/home/pavan/Downloads/SUTD/DesignProject/navrl-bench/m3_ros2_ws/src/nav_rl_bridge/rl_path_dataset/aws_warehouse"
+    nav2_path_dataset_dir: str = mdp.nav2_path_dataset_dir
 
     def __post_init__(self) -> None:
         self.decimation = 4

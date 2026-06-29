@@ -140,8 +140,12 @@ def bad_orientation_2(
     env: "ManagerBasedRLEnv",
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
+    # Skip first 10 steps so the contact-sensor history and leg springs can settle
+    # after each episode reset before we start checking orientation.
+    settling = env.episode_length_buf < 10
     asset: RigidObject = env.scene[asset_cfg.name]
-    return (asset.data.projected_gravity_b[:, 2] > 0) | (asset.data.projected_gravity_b[:, :2].abs() > 0.7).any(-1)
+    bad = (asset.data.projected_gravity_b[:, 2] > 0) | (asset.data.projected_gravity_b[:, :2].abs() > 0.7).any(-1)
+    return bad & ~settling
 
 
 # ---------------------------------------------------------------------------
