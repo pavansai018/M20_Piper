@@ -18,48 +18,6 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# Existing observation helpers
-# ---------------------------------------------------------------------------
-
-def joint_pos_rel_without_wheel(
-    env: ManagerBasedEnv,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    wheel_asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> torch.Tensor:
-    """Joint positions relative to default, with wheel joints zeroed out."""
-    asset: Articulation = env.scene[asset_cfg.name]
-    joint_pos_rel = asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
-
-    if isinstance(asset_cfg.joint_ids, slice):
-        selected_joint_ids = list(range(asset.num_joints))
-    else:
-        selected_joint_ids = list(asset_cfg.joint_ids)
-
-    if isinstance(wheel_asset_cfg.joint_ids, slice):
-        wheel_joint_ids = list(range(asset.num_joints))
-    else:
-        wheel_joint_ids = list(wheel_asset_cfg.joint_ids)
-
-    wheel_local_ids = [
-        selected_joint_ids.index(jid)
-        for jid in wheel_joint_ids
-        if jid in selected_joint_ids
-    ]
-
-    if len(wheel_local_ids) > 0:
-        joint_pos_rel[:, wheel_local_ids] = 0.0
-
-    return joint_pos_rel
-
-
-def phase(env: ManagerBasedRLEnv, cycle_time: float) -> torch.Tensor:
-    if not hasattr(env, "episode_length_buf") or env.episode_length_buf is None:
-        env.episode_length_buf = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
-    phase_val = env.episode_length_buf[:, None] * env.step_dt / cycle_time
-    return torch.cat([torch.sin(2 * torch.pi * phase_val), torch.cos(2 * torch.pi * phase_val)], dim=-1)
-
-
-# ---------------------------------------------------------------------------
 # Path tracking helpers
 # ---------------------------------------------------------------------------
 
@@ -361,29 +319,6 @@ def front_lidar_scan_obs(
 
     return ranges / max_range if normalize else ranges
 
-
-def front_lidar_blocked_obs(
-    env: ManagerBasedRLEnv,
-    trigger_range: float = 1.50,
-    max_range: float = 5.0,
-    center_width: int = 7,
-) -> torch.Tensor:
-    """1 if front LiDAR sector is blocked, else 0."""
-    ranges = front_lidar_scan_obs(
-        env,
-        max_range=max_range,
-        normalize=False,
-    )
-
-    center = ranges.shape[1] // 2
-    half = center_width // 2
-    center_ranges = ranges[:, center - half : center + half + 1]
-
-    center_min = torch.min(center_ranges, dim=1).values
-    blocked = center_min < trigger_range
-
-    return blocked.float().unsqueeze(1)
-
 def lidar_sector_blocked_obs(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
@@ -428,3 +363,35 @@ def lidar_sector_blocked_obs(
     blocked = sector_min < trigger_range
 
     return blocked.float().unsqueeze(1)
+
+
+def arm_joint_pos_rel_obs(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Arm joint position relative to default pose."""
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    if not hasattr(env, "_obs_arm_joint_ids"):
+        from M20_Piper.tasks.manager_based.m20_piper.mdp.config import arm_joint_names
+        ids, _ = asset.find_joints(arm_joint_names)
+        env._obs_arm_joint_ids = ids # type: ignore
+
+    arm_ids = env._obs_arm_joint_ids # type: ignore
+    return asset.data.joint_pos[:, arm_ids] - asset.data.default_joint_pos[:, arm_ids]
+
+
+def arm_joint_vel_obs(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Arm joint velocities."""
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    if not hasattr(env, "_obs_arm_vel_joint_ids"):
+        from M20_Piper.tasks.manager_based.m20_piper.mdp.config import arm_joint_names
+        ids, _ = asset.find_joints(arm_joint_names)
+        env._obs_arm_vel_joint_ids = ids # type: ignore
+
+    arm_ids = env._obs_arm_vel_joint_ids # type: ignore
+    return asset.data.joint_vel[:, arm_ids]
