@@ -142,9 +142,9 @@ def bad_orientation_2(
 ) -> torch.Tensor:
     # Skip first 10 steps so the contact-sensor history and leg springs can settle
     # after each episode reset before we start checking orientation.
-    settling = env.episode_length_buf < 10
+    settling = env.episode_length_buf < 50
     asset: RigidObject = env.scene[asset_cfg.name]
-    bad = (asset.data.projected_gravity_b[:, 2] > 0) | (asset.data.projected_gravity_b[:, :2].abs() > 0.9).any(-1)
+    bad = (asset.data.projected_gravity_b[:, 2] > -0.2) | (asset.data.projected_gravity_b[:, :2].abs() > 0.85).any(-1)
     return bad & ~settling
 
 
@@ -671,9 +671,9 @@ def reset_obstacle_on_path(
 # Piper arm joint targets (radians, absolute):
 #   joint1=base-yaw  joint2=shoulder  joint3=elbow
 #   joint4=forearm-rot  joint5=wrist  joint6=wrist-rot
-_ARM_EXTEND_POSE = torch.tensor([ 0.0, -0.3,  1.5,  0.0,  0.8,  0.0])  # reach forward
-_ARM_SWEEP_POSE  = torch.tensor([-0.8, -0.3,  1.5,  0.0,  0.8,  0.0])  # sweep right, clears path
-
+# Respect URDF limits: joint2 must be >= 0, joint3 must be <= 0.
+_ARM_EXTEND_POSE = torch.tensor([ 0.0,  0.35, -1.10, 0.0, 0.80, 0.0])
+_ARM_SWEEP_POSE  = torch.tensor([-0.8,  0.35, -1.10, 0.0, 0.80, 0.0])
 
 def arm_obstacle_controller(
     env: "ManagerBasedRLEnv",

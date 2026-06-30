@@ -127,7 +127,7 @@ class ActionsCfg:
     joint_vel = mdp.JointVelocityActionCfg(
         asset_name="robot",
         joint_names=mdp.wheel_joint_names, # + mdp.leg_joint_names,
-        scale=2.0,
+        scale=8.0,
         use_default_offset=True,
         clip={".*": (-100.0, 100.0)},
         preserve_order=True,
@@ -508,7 +508,11 @@ class RewardsCfg:
         func=mdp.undesired_contacts,
         weight=-1.0,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[f"^(?!.*(_wheel|joint[1-8])).*"], ), # exclude wheels AND arm links
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces", 
+                 body_names=[r"^(?!.*(_wheel|front_lidar|arm_base_link|gripper_base|link[1-8])).*"],
+                # body_names=[f"^(?!.*(_wheel|joint[1-8])).*"], # exclude wheels AND arm links
+            ),
             "threshold": 1.0,
         },
     )
@@ -575,14 +579,22 @@ class TerminationsCfg:
     """Termination terms for the MDP."""
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    illegal_contact = DoneTerm(
-        func=mdp.illegal_contact,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=mdp.base_link_name), "threshold": 50.0},
-    )
+    # illegal_contact = DoneTerm(
+    #     func=mdp.illegal_contact,
+    #     params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=mdp.base_link_name), "threshold": 50.0},
+    # )
     bad_orientation_2 = DoneTerm(func=mdp.bad_orientation_2)
     goal_reached = DoneTerm(
         func=mdp.goal_reached,
         params={"asset_cfg": SceneEntityCfg("robot"), "threshold": 0.4},
+    )
+    illegal_contact = DoneTerm(
+        func=mdp.illegal_contact_after_settle,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=mdp.base_link_name),
+            "threshold": 50.0,
+            "settle_steps": 50,
+        },
     )
 
 
