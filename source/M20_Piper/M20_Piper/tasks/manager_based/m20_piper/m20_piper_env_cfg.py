@@ -110,10 +110,9 @@ class CommandsCfg:
 class ActionsCfg:
     """Action specifications for the MDP.
 
-    Only legs and wheels are controlled by the RL policy.
-    Arm joints (joint1-6) and gripper joints (joint7-8) are intentionally
-    excluded so they hold their default position via the PD actuator and do
-    not wander randomly.
+    Only wheel joints are controlled by the RL policy.
+    Hip and knee joints are held at their default stance by a scripted PD hold event.
+    Arm joints are controlled by the scripted obstacle controller.
     """
     # joint_pos = mdp.JointPositionActionCfg(
     #     asset_name="robot",
@@ -344,11 +343,21 @@ class EventCfg:
         mode="reset",
         params={"position_range": (1.0, 1.0), "velocity_range": (0.0, 0.0)},
     )
+
+    hold_leg_home = EventTerm(
+        func=mdp.hold_leg_home_position,
+        mode="interval",
+        interval_range_s=(0.02, 0.02),
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
+    
     randomize_actuator_gains = EventTerm(
         func=mdp.randomize_actuator_gains,  # type: ignore
         mode="reset",
         params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+            "asset_cfg": SceneEntityCfg("robot", joint_names=mdp.wheel_joint_names),
             "stiffness_distribution_params": (0.85, 1.15),
             "damping_distribution_params": (0.85, 1.15),
             "operation": "scale",
