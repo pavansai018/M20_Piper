@@ -9,7 +9,7 @@ import torch
 
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
-from .observations import _robot_xy_local # type: ignore
+from .observations import _nearest_path_index, _robot_xy_local # type: ignore
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -58,3 +58,42 @@ def illegal_contact_after_settle(
     bad = torch.any(torch.max(forces, dim=1).values > threshold, dim=1)
 
     return bad & (env.episode_length_buf >= settle_steps)
+
+
+def path_deviation_too_large(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    lookahead: int = 4,
+    max_cte: float = 1.25,
+    settle_steps: int = 30,
+) -> torch.Tensor:
+    """Terminate if robot leaves the global path too far.
+
+    This prevents:
+        obstacle appears -> robot bypasses -> never returns -> keeps moving forward.
+    """
+    e: Any = env
+
+    if not hasattr(e, "navrl_global_path_xy"):
+        return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+
+    path = e.navrl_global_path_xy
+    valid = e.navrl_path_valid_count
+    nearest = _nearest_path_index(e)
+    robot_xy = _robot_xy_local(e)
+
+    ahead_idx = (nearest + lookahead).clamp(max=(valid - 1).clamp(min=0))
+
+    nearest_exp = nearest.unsqueeze(-1).unsqueeze(-1).expand(-1, 1, 2)
+    ahead_exp = ahead_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, 1, 2)
+
+    p0 = path.gather(1, nearest_exp).squeeze(1)
+    p1 = path.gather(1, ahead_exp).squeeze(1)
+
+    tangent = p1 - p0
+    tangent = tangent / torch.norm(tangent, dim=-1, keepdim=True).clamp(min=1e-6)
+
+    normal = torch.stack([-tangent[:, 1], tangent[:, 0]], dim=-1)
+    cte = torch.abs(torch.sum((robot_xy - p0) * normal, dim=-1))
+
+    return (cte > max_cte) & (env.episode_length_buf > settle_steps)

@@ -279,54 +279,54 @@ class EventCfg:
     """Configuration for events."""
 
     # startup
-    randomize_rigid_body_material = EventTerm(
-        func=mdp.randomize_rigid_body_material,  # type: ignore
-        mode="startup",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "static_friction_range": [0.35, 1.5],
-            "dynamic_friction_range": [0.35, 1.5],
-            "restitution_range": [0.0, 0.1],
-            "num_buckets": 1024,
-        },
-    )
-    randomize_rigid_body_mass = EventTerm(
-        func=mdp.randomize_rigid_body_mass,  # type: ignore
-        mode="startup",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=f"^(?!.*{mdp.base_link_name}).*"),
-            "mass_distribution_params": (0.85, 1.15),
-            "operation": "scale",
-            "recompute_inertia": True,
-        },
-    )
-    randomize_rigid_body_mass_base = EventTerm(
-        func=mdp.randomize_rigid_body_mass,  # type: ignore
-        mode="startup",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=[mdp.base_link_name]),
-            "mass_distribution_params": (-1.0, 3.0),
-            "operation": "add",
-            "recompute_inertia": True,
-        },
-    )
-    randomize_rigid_body_inertia = EventTerm(
-        func=mdp.randomize_rigid_body_inertia,  # type: ignore
-        mode="startup",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "inertia_distribution_params": (0.85, 1.15),
-            "operation": "scale",
-        },
-    )
-    randomize_com_positions = EventTerm(
-        func=mdp.randomize_rigid_body_com,
-        mode="startup",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=[mdp.base_link_name]),
-            "com_range": {"x": (-0.03, 0.03), "y": (-0.03, 0.03), "z": (-0.02, 0.02)},
-        },
-    )
+    # randomize_rigid_body_material = EventTerm(
+    #     func=mdp.randomize_rigid_body_material,  # type: ignore
+    #     mode="startup",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
+    #         "static_friction_range": [0.35, 1.5],
+    #         "dynamic_friction_range": [0.35, 1.5],
+    #         "restitution_range": [0.0, 0.1],
+    #         "num_buckets": 1024,
+    #     },
+    # )
+    # randomize_rigid_body_mass = EventTerm(
+    #     func=mdp.randomize_rigid_body_mass,  # type: ignore
+    #     mode="startup",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=f"^(?!.*{mdp.base_link_name}).*"),
+    #         "mass_distribution_params": (0.85, 1.15),
+    #         "operation": "scale",
+    #         "recompute_inertia": True,
+    #     },
+    # )
+    # randomize_rigid_body_mass_base = EventTerm(
+    #     func=mdp.randomize_rigid_body_mass,  # type: ignore
+    #     mode="startup",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=[mdp.base_link_name]),
+    #         "mass_distribution_params": (-1.0, 3.0),
+    #         "operation": "add",
+    #         "recompute_inertia": True,
+    #     },
+    # )
+    # randomize_rigid_body_inertia = EventTerm(
+    #     func=mdp.randomize_rigid_body_inertia,  # type: ignore
+    #     mode="startup",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
+    #         "inertia_distribution_params": (0.85, 1.15),
+    #         "operation": "scale",
+    #     },
+    # )
+    # randomize_com_positions = EventTerm(
+    #     func=mdp.randomize_rigid_body_com,
+    #     mode="startup",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=[mdp.base_link_name]),
+    #         "com_range": {"x": (-0.03, 0.03), "y": (-0.03, 0.03), "z": (-0.02, 0.02)},
+    #     },
+    # )
 
     # reset
     # randomize_apply_external_force_torque = EventTerm(
@@ -410,7 +410,7 @@ class EventCfg:
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "obstacle_name": "obstacle",
-            "detection_range": 1.15,
+            "detection_range": 1.5,
             "detection_lat_half": 0.40,
             "extend_duration_s": 0.8,
             "sweep_duration_s": 1.2,
@@ -630,8 +630,18 @@ class TerminationsCfg:
         func=mdp.illegal_contact_after_settle,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=mdp.base_link_name),
-            "threshold": 50.0,
-            "settle_steps": 50,
+            "threshold": 150.0,
+            "settle_steps": 100,
+        },
+    )
+
+    path_deviation = DoneTerm(
+        func=mdp.path_deviation_too_large,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "lookahead": 4,
+            "max_cte": 1.25,
+            "settle_steps": 30,
         },
     )
 
