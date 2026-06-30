@@ -1234,3 +1234,114 @@ def goal_reached_bonus(
 
     dist = torch.norm(goal_xy - robot_xy, dim=-1)
     return (dist < threshold).float() * bonus
+
+
+def _path_tangent_at_robot(
+    env: ManagerBasedRLEnv,
+    lookahead: int = 4,
+) -> torch.Tensor:
+    """Return local path tangent vector in world XY frame. Shape: [N, 2]."""
+    e: Any = env
+
+    path = e.navrl_global_path_xy
+    valid = e.navrl_path_valid_count
+    nearest = _nearest_path_index(e)
+
+    ahead_idx = (nearest + lookahead).clamp(max=(valid - 1).clamp(min=0))
+
+    nearest_exp = nearest.unsqueeze(-1).unsqueeze(-1).expand(-1, 1, 2)
+    ahead_exp = ahead_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, 1, 2)
+
+    p0 = path.gather(1, nearest_exp).squeeze(1)
+    p1 = path.gather(1, ahead_exp).squeeze(1)
+
+    tangent = p1 - p0
+    tangent = tangent / torch.norm(tangent, dim=-1, keepdim=True).clamp(min=1e-6)
+
+    return tangent
+
+
+def path_forward_velocity(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    lookahead: int = 4,
+    max_speed: float = 1.0,
+) -> torch.Tensor:
+    """Reward velocity in the correct path direction."""
+    e: Any = env
+    if not hasattr(e, "navrl_global_path_xy"):
+        return torch.zeros(env.num_envs, device=env.device)
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    tangent = _path_tangent_at_robot(env, lookahead=lookahead)
+
+    vel_xy_w = asset.data.root_lin_vel_w[:, :2]
+    forward_speed = torch.sum(vel_xy_w * tangent, dim=-1)
+
+    return torch.clamp(forward_speed, 0.0, max_speed)
+
+
+def path_reverse_velocity_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    lookahead: int = 4,
+    max_speed: float = 1.0,
+) -> torch.Tensor:
+    """Penalize velocity opposite to the path direction."""
+    e: Any = env
+    if not hasattr(e, "navrl_global_path_xy"):
+        return torch.zeros(env.num_envs, device=env.device)
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    tangent = _path_tangent_at_robot(env, lookahead=lookahead)
+
+    vel_xy_w = asset.data.root_lin_vel_w[:, :2]
+    forward_speed = torch.sum(vel_xy_w * tangent, dim=-1)
+
+    return torch.clamp(-forward_speed, 0.0, max_speed)
+
+
+def body_obstacle_push_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    obstacle_name: str = "obstacle",
+    front_limit: float = 0.50,
+    lat_half: float = 0.38,
+) -> torch.Tensor:
+    """Penalty when robot body gets close enough to push obstacle.
+
+    Arm should clear the obstacle. Base/body should not be the clearing tool.
+    """
+    e: Any = env
+
+    if obstacle_name not in env.scene.rigid_objects:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    obstacle = env.scene.rigid_objects[obstacle_name]
+
+    quat = asset.data.root_quat_w
+    w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+    yaw = torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+    dx = obstacle.data.root_pos_w[:, 0] - asset.data.root_pos_w[:, 0]
+    dy = obstacle.data.root_pos_w[:, 1] - asset.data.root_pos_w[:, 1]
+
+    cos_y = torch.cos(yaw)
+    sin_y = torch.sin(yaw)
+
+    bx = cos_y * dx + sin_y * dy
+    by = -sin_y * dx + cos_y * dy
+
+    body_push_zone = (
+        (bx > -0.10)
+        & (bx < front_limit)
+        & (torch.abs(by) < lat_half)
+        & (env.episode_length_buf > 20)
+    )
+
+    # Do not penalize while scripted arm is actively clearing.
+    if hasattr(e, "_arm_state"):
+        body_push_zone = body_push_zone & (e._arm_state == 0)
+
+    return body_push_zone.float()
