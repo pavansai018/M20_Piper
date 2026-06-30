@@ -1345,3 +1345,212 @@ def body_obstacle_push_penalty(
         body_push_zone = body_push_zone & (e._arm_state == 0)
 
     return body_push_zone.float()
+
+
+_ARM_SWEEP_TARGET = torch.tensor([-0.90, 0.35, -1.10, 0.0, 0.80, 0.0])
+
+
+def _front_blocked_from_scan(
+    env: ManagerBasedRLEnv,
+    trigger_range: float = 1.50,
+    max_range: float = 5.0,
+    center_width: int = 7,
+) -> torch.Tensor:
+    from .observations import front_lidar_scan_obs
+
+    ranges = front_lidar_scan_obs(
+        env,
+        max_range=max_range,
+        normalize=False,
+    )
+
+    center = ranges.shape[1] // 2
+    half = center_width // 2
+    center_ranges = ranges[:, center - half : center + half + 1]
+    center_min = torch.min(center_ranges, dim=1).values
+
+    return center_min < trigger_range
+
+
+def stop_when_front_blocked_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    trigger_range: float = 1.50,
+    max_range: float = 5.0,
+) -> torch.Tensor:
+    """Penalize base motion when LiDAR says obstacle is close in front."""
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    blocked = _front_blocked_from_scan(
+        env,
+        trigger_range=trigger_range,
+        max_range=max_range,
+    )
+
+    speed_xy = torch.norm(asset.data.root_lin_vel_w[:, :2], dim=1)
+
+    return blocked.float() * speed_xy
+
+
+def arm_sweep_when_blocked_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    trigger_range: float = 1.50,
+    max_range: float = 5.0,
+) -> torch.Tensor:
+    """Reward PPO for moving the arm toward sweep pose when front is blocked."""
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    from M20_Piper.tasks.manager_based.m20_piper.mdp.config import arm_joint_names
+
+    if not hasattr(env, "_ppo_arm_reward_joint_ids"):
+        ids, _ = asset.find_joints(arm_joint_names)
+        env._ppo_arm_reward_joint_ids = ids # type: ignore
+
+    arm_ids = env._ppo_arm_reward_joint_ids # type: ignore
+
+    blocked = _front_blocked_from_scan(
+        env,
+        trigger_range=trigger_range,
+        max_range=max_range,
+    )
+
+    speed_xy = torch.norm(asset.data.root_lin_vel_w[:, :2], dim=1)
+    stopped = speed_xy < 0.10
+
+    target = _ARM_SWEEP_TARGET.to(env.device).unsqueeze(0)
+    arm_pos = asset.data.joint_pos[:, arm_ids]
+
+    err = torch.norm(arm_pos - target, dim=1)
+
+    # High when arm is near sweep pose.
+    pose_reward = torch.exp(-err / 0.35)
+
+    return blocked.float() * stopped.float() * pose_reward
+
+
+def arm_home_when_clear_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    trigger_range: float = 1.50,
+    max_range: float = 5.0,
+) -> torch.Tensor:
+    """Penalize unnecessary arm movement when front path is clear."""
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    from M20_Piper.tasks.manager_based.m20_piper.mdp.config import arm_joint_names
+
+    if not hasattr(env, "_ppo_arm_home_joint_ids"):
+        ids, _ = asset.find_joints(arm_joint_names)
+        env._ppo_arm_home_joint_ids = ids # type: ignore
+
+    arm_ids = env._ppo_arm_home_joint_ids # type: ignore
+
+    blocked = _front_blocked_from_scan(
+        env,
+        trigger_range=trigger_range,
+        max_range=max_range,
+    )
+
+    arm_deviation = torch.norm(
+        asset.data.joint_pos[:, arm_ids] - asset.data.default_joint_pos[:, arm_ids],
+        dim=1,
+    )
+
+    return (~blocked).float() * arm_deviation
+
+
+def front_clearance_after_arm_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    trigger_range: float = 1.50,
+    max_range: float = 5.0,
+) -> torch.Tensor:
+    """Reward larger front LiDAR clearance.
+
+    This encourages the arm to physically remove the object from the front sector.
+    """
+    from .observations import front_lidar_scan_obs
+
+    ranges = front_lidar_scan_obs(
+        env,
+        max_range=max_range,
+        normalize=False,
+    )
+
+    center = ranges.shape[1] // 2
+    center_ranges = ranges[:, center - 3 : center + 4]
+    center_min = torch.min(center_ranges, dim=1).values
+
+    blocked_or_near = center_min < trigger_range
+
+    # Reward increases as front sector becomes clear.
+    clearance = torch.clamp(center_min / trigger_range, 0.0, 1.0)
+
+    return blocked_or_near.float() * clearance
+
+def action_rate_l2_raw(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """Action smoothness penalty without gait-level curriculum gating."""
+    return torch.sum(torch.square(env.action_manager.action - env.action_manager.prev_action), dim=1)
+
+
+def base_planar_speed_l2(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize high XY base speed."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    return torch.sum(torch.square(asset.data.root_lin_vel_b[:, :2]), dim=1)
+
+
+def yaw_rate_l2(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize fast yaw rotation."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    return torch.square(asset.data.root_ang_vel_b[:, 2])
+
+def arm_body_collision_zone_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    arm_body_names: tuple[str, ...] = ("link5", "link6", "link7", "link8"),
+    base_half_x: float = 0.38,
+    base_half_y: float = 0.30,
+    z_min: float = -0.10,
+    z_max: float = 0.45,
+) -> torch.Tensor:
+    """Penalty if distal arm/gripper links enter the robot body safety box.
+
+    This is a geometric self-collision guard. It does not require PhysX
+    self-collision to be enabled.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    if not hasattr(env, "_arm_body_collision_ids"):
+        ids, _ = asset.find_bodies(list(arm_body_names))
+        env._arm_body_collision_ids = ids # type: ignore
+
+    body_ids = env._arm_body_collision_ids # type: ignore
+
+    if len(body_ids) == 0:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    arm_pos_w = asset.data.body_pos_w[:, body_ids, :]          # [N, B, 3]
+    root_pos_w = asset.data.root_pos_w[:, None, :]             # [N, 1, 3]
+    rel_w = arm_pos_w - root_pos_w                             # [N, B, 3]
+
+    # Convert arm link positions into robot base frame.
+    q = asset.data.root_quat_w[:, None, :].expand(-1, len(body_ids), -1)
+    rel_b = quat_apply_inverse(
+        q.reshape(-1, 4),
+        rel_w.reshape(-1, 3),
+    ).reshape(env.num_envs, len(body_ids), 3)
+
+    inside_x = torch.abs(rel_b[..., 0]) < base_half_x
+    inside_y = torch.abs(rel_b[..., 1]) < base_half_y
+    inside_z = (rel_b[..., 2] > z_min) & (rel_b[..., 2] < z_max)
+
+    violation = inside_x & inside_y & inside_z
+
+    return violation.float().sum(dim=1)

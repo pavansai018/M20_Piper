@@ -261,3 +261,125 @@ def distance_to_goal(
 
     dist = torch.norm(goal_xy - robot_xy, dim=-1)        # [num_envs]
     return (dist / normalize_dist).unsqueeze(-1)
+
+def front_lidar_scan_obs(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    obstacle_name: str = "obstacle",
+    num_rays: int = 31,
+    fov_deg: float = 80.0,
+    max_range: float = 5.0,
+    lidar_x: float = 0.37,
+    lidar_z: float = 0.05,
+    lidar_pitch_deg: float = -7.0,
+    obs_hx: float = 0.20,
+    obs_hy: float = 0.20,
+    obs_hz: float = 0.25,
+    normalize: bool = True,
+) -> torch.Tensor:
+    """Front LiDAR sector scan.
+
+    Sim training:
+        Synthetic scan is generated from obstacle pose.
+
+    Real deployment:
+        Replace this with real /scan sector preprocessing.
+        PPO should still receive the same normalized front scan vector.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    if obstacle_name not in env.scene.rigid_objects:
+        out = torch.full((env.num_envs, num_rays), max_range, device=env.device)
+        return out / max_range if normalize else out
+
+    obstacle = env.scene.rigid_objects[obstacle_name]
+
+    robot_pos = asset.data.root_pos_w
+    robot_quat = asset.data.root_quat_w
+    obs_pos = obstacle.data.root_pos_w
+
+    q = robot_quat
+    w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+    yaw = torch.atan2(
+        2.0 * (w * z + x * y),
+        1.0 - 2.0 * (y * y + z * z),
+    )
+
+    sensor = torch.stack(
+        [
+            robot_pos[:, 0] + lidar_x * torch.cos(yaw),
+            robot_pos[:, 1] + lidar_x * torch.sin(yaw),
+            robot_pos[:, 2] + lidar_z,
+        ],
+        dim=1,
+    )
+
+    offsets = torch.linspace(
+        -math.radians(fov_deg) * 0.5,
+        math.radians(fov_deg) * 0.5,
+        num_rays,
+        device=env.device,
+    )
+
+    pitch = math.radians(lidar_pitch_deg)
+    cp = math.cos(pitch)
+    sp = math.sin(pitch)
+
+    ray_yaw = yaw.unsqueeze(1) + offsets.unsqueeze(0)
+
+    dirs = torch.stack(
+        [
+            torch.cos(ray_yaw) * cp,
+            torch.sin(ray_yaw) * cp,
+            torch.full((env.num_envs, num_rays), sp, device=env.device),
+        ],
+        dim=2,
+    )
+
+    half_ext = torch.tensor([obs_hx, obs_hy, obs_hz], device=env.device)
+
+    obs_lo = (obs_pos - half_ext).unsqueeze(1)
+    obs_hi = (obs_pos + half_ext).unsqueeze(1)
+    sensor_exp = sensor.unsqueeze(1)
+
+    safe_dirs = torch.where(
+        dirs.abs() < 1e-9,
+        torch.full_like(dirs, 1e-9),
+        dirs,
+    )
+
+    t0 = (obs_lo - sensor_exp) / safe_dirs
+    t1 = (obs_hi - sensor_exp) / safe_dirs
+
+    t_enter = torch.min(t0, t1).max(dim=2).values
+    t_exit = torch.max(t0, t1).min(dim=2).values
+
+    hit = (t_enter < t_exit) & (t_enter > 0.05) & (t_enter < max_range)
+
+    ranges = torch.full((env.num_envs, num_rays), max_range, device=env.device)
+    ranges = torch.where(hit, t_enter, ranges)
+
+    return ranges / max_range if normalize else ranges
+
+
+def front_lidar_blocked_obs(
+    env: ManagerBasedRLEnv,
+    trigger_range: float = 1.50,
+    max_range: float = 5.0,
+    center_width: int = 7,
+) -> torch.Tensor:
+    """1 if front LiDAR sector is blocked, else 0."""
+    ranges = front_lidar_scan_obs(
+        env,
+        max_range=max_range,
+        normalize=False,
+    )
+
+    center = ranges.shape[1] // 2
+    half = center_width // 2
+    center_ranges = ranges[:, center - half : center + half + 1]
+
+    center_min = torch.min(center_ranges, dim=1).values
+    blocked = center_min < trigger_range
+
+    return blocked.float().unsqueeze(1)
