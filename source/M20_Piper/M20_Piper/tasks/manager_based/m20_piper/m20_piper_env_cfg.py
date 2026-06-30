@@ -244,6 +244,32 @@ class ObservationsCfg:
             scale=1.0,
         )
 
+        path_corridor_blocked = ObsTerm(
+            func=mdp.path_corridor_blocked_obs,
+            params={
+                "asset_cfg": SceneEntityCfg("robot"),
+                "obstacle_name": "obstacle",
+                "min_ahead_m": 0.30,
+                "max_ahead_m": 3.00,
+                "corridor_half_width": 0.30,
+            },
+            clip=(0.0, 1.0),
+            scale=1.0,
+        )
+
+        arm_reach_blocked = ObsTerm(
+            func=mdp.arm_reach_path_blocked_obs,
+            params={
+                "asset_cfg": SceneEntityCfg("robot"),
+                "obstacle_name": "obstacle",
+                "arm_min_m": 0.25,
+                "arm_max_m": 1.10,
+                "corridor_half_width": 0.30,
+            },
+            clip=(0.0, 1.0),
+            scale=1.0,
+        )
+
         actions = ObsTerm(func=mdp.last_action, clip=(-100.0, 100.0), scale=1.0)
 
         # --- Path tracking observations ---
@@ -341,6 +367,32 @@ class ObservationsCfg:
                 "trigger_range": 1.75,
                 "sector_center_deg": 0.0,
                 "sector_half_width_deg": 120.0,
+            },
+            clip=(0.0, 1.0),
+            scale=1.0,
+        )
+
+        path_corridor_blocked = ObsTerm(
+            func=mdp.path_corridor_blocked_obs,
+            params={
+                "asset_cfg": SceneEntityCfg("robot"),
+                "obstacle_name": "obstacle",
+                "min_ahead_m": 0.30,
+                "max_ahead_m": 3.00,
+                "corridor_half_width": 0.30,
+            },
+            clip=(0.0, 1.0),
+            scale=1.0,
+        )
+
+        arm_reach_blocked = ObsTerm(
+            func=mdp.arm_reach_path_blocked_obs,
+            params={
+                "asset_cfg": SceneEntityCfg("robot"),
+                "obstacle_name": "obstacle",
+                "arm_min_m": 0.25,
+                "arm_max_m": 1.10,
+                "corridor_half_width": 0.30,
             },
             clip=(0.0, 1.0),
             scale=1.0,
@@ -512,27 +564,35 @@ class RewardsCfg:
 
     # --- Path-following rewards ---
     path_progress = RewTerm(
-        func=mdp.path_progress_when_front_clear,
+        func=mdp.path_progress_unless_arm_reach_blocked,
         weight=12.0,
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "obstacle_name": "obstacle",
-            "trigger_range": 1.50,
-            "max_range": 5.0,
             "max_step_reward": 0.025,
         },
     )
 
     path_forward_velocity = RewTerm(
-        func=mdp.path_forward_velocity_when_front_clear,
+        func=mdp.path_forward_velocity_unless_arm_reach_blocked,
         weight=1.0,
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "obstacle_name": "obstacle",
-            "trigger_range": 1.50,
-            "max_range": 5.0,
             "lookahead": 4,
             "max_speed": 0.35,
+        },
+    )
+
+    path_corridor_clearance = RewTerm(
+        func=mdp.path_corridor_clearance_reward,
+        weight=30.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "obstacle_name": "obstacle",
+            "min_arm_deviation": 0.10,
+            "stopped_speed": 0.06,
+            "stopped_yaw_rate": 0.12,
         },
     )
     path_cte_penalty = RewTerm(
@@ -579,21 +639,6 @@ class RewardsCfg:
         },
     )
 
-
-
-    front_clearance_delta = RewTerm(
-        func=mdp.front_clearance_delta_reward,
-        weight=20.0,
-        params={
-            "asset_cfg": SceneEntityCfg("robot"),
-            "obstacle_name": "obstacle",
-            "trigger_range": 1.50,
-            "max_range": 5.0,
-            "min_arm_deviation": 0.10,
-            "stopped_speed": 0.15,
-        },
-    )
-
     front_blocked_persistence = RewTerm(
         func=mdp.front_blocked_persistence_penalty,
         weight=-2.0,
@@ -635,6 +680,28 @@ class TerminationsCfg:
             "asset_cfg": SceneEntityCfg("robot"),
             "lookahead": 4,
             "max_cte": 1.25,
+            "settle_steps": 30,
+        },
+    )
+
+    bypass_path_obstacle = DoneTerm(
+        func=mdp.bypassing_path_obstacle,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "obstacle_name": "obstacle",
+            "max_cte_while_blocked": 0.28,
+            "max_heading_error_while_blocked": 0.75,
+            "settle_steps": 30,
+        },
+    )
+
+    base_motion_arm_zone = DoneTerm(
+        func=mdp.base_motion_when_arm_reach_blocked,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "obstacle_name": "obstacle",
+            "max_xy_speed": 0.06,
+            "max_yaw_rate": 0.12,
             "settle_steps": 30,
         },
     )
