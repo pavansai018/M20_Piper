@@ -345,7 +345,6 @@ def _detect_obstacle_batch(
     detected[idle_mask] = hit_any
     return detected
 
-
 def draw_path_debug(
     env: "ManagerBasedRLEnv",
     env_ids: torch.Tensor,
@@ -353,18 +352,47 @@ def draw_path_debug(
     path_stride: int = 3,
     max_draw_envs: int = 4,
 ) -> None:
-    """Draw Nav2 global paths, goal dots, obstacle wireframe, and lidar rays.
+    """Optional debug draw for path, goal, obstacle wireframe, and lidar rays.
 
-    All GPU tensors are transferred to CPU in a single batch before any Python
-    loop — no per-element GPU syncs that would stall training.
-    Exits immediately in headless mode (no visible output, just wasted time).
+    Controlled from env.cfg:
+
+        debug_draw_enabled
+        debug_draw_path
+        debug_draw_goal
+        debug_draw_obstacle
+        debug_draw_lidar
+        debug_draw_max_envs
+        debug_draw_path_stride
+
+    When debug_draw_enabled=False, this returns before debug-draw import,
+    GPU->CPU transfer, or Python drawing loops.
     """
     e: Any = env
+
+    # ----------------------------------------------------------------------
+    # Config flags: default is OFF for training speed.
+    # ----------------------------------------------------------------------
+    cfg = getattr(env, "cfg", None)
+
+    debug_draw_enabled = bool(getattr(cfg, "debug_draw_enabled", False))
+    if not debug_draw_enabled:
+        return
+
+    draw_path = bool(getattr(cfg, "debug_draw_path", True))
+    draw_goal = bool(getattr(cfg, "debug_draw_goal", True))
+    draw_obstacle = bool(getattr(cfg, "debug_draw_obstacle", True))
+    draw_lidar = bool(getattr(cfg, "debug_draw_lidar", True))
+
+    if not (draw_path or draw_goal or draw_obstacle or draw_lidar):
+        return
+
+    path_stride = int(getattr(cfg, "debug_draw_path_stride", path_stride))
+    max_draw_envs = int(getattr(cfg, "debug_draw_max_envs", max_draw_envs))
+
     if not hasattr(e, "navrl_global_path_xy"):
         return
 
-    # Skip entirely when running headless — draw calls add significant overhead
-    # even with no display present.  Set /app/window/hideUi = false to visualise.
+    # Extra safety for real headless mode.
     try:
         import carb as _carb
         if _carb.settings.get_settings().get_as_bool("/app/window/hideUi"):
@@ -380,101 +408,173 @@ def draw_path_debug(
     if n == 0:
         return
 
-    # ---- Single batch GPU→CPU transfer for all draw envs -------------------
-    # Doing this once avoids per-element CUDA stream synchronisations inside
-    # the Python loops below (each float() on a GPU tensor is one sync ≈ 100 µs).
     draw_ids_list = draw_ids.tolist()
-    origins_l = e.scene.env_origins[draw_ids, :2].cpu().tolist()          # [n, 2]
-    valids_l  = e.navrl_path_valid_count[draw_ids].cpu().tolist()          # [n]
-    goals_l   = e.navrl_final_goal_xy[draw_ids].cpu().tolist()             # [n, 2]
-
-    robot_asset: Articulation = env.scene[asset_cfg.name]
-    rp_l = robot_asset.data.root_pos_w[draw_ids].cpu().tolist()            # [n, 3]
-    q_l  = robot_asset.data.root_quat_w[draw_ids].cpu().tolist()           # [n, 4]
 
     has_obs = "obstacle" in env.scene.rigid_objects
+
+    need_origins = draw_path or draw_goal
+    need_robot_pose = draw_lidar
+    need_obstacle_pose = (draw_obstacle or draw_lidar) and has_obs
+
+    origins_l = None
+    valids_l = None
+    goals_l = None
+    rp_l = None
+    q_l = None
     obs_l: list = []
-    if has_obs:
+
+    # ----------------------------------------------------------------------
+    # Transfer only the tensors required by enabled flags.
+    # ----------------------------------------------------------------------
+    if need_origins:
+        origins_l = e.scene.env_origins[draw_ids, :2].cpu().tolist()
+
+    if draw_path:
+        valids_l = e.navrl_path_valid_count[draw_ids].cpu().tolist()
+
+    if draw_goal:
+        goals_l = e.navrl_final_goal_xy[draw_ids].cpu().tolist()
+
+    robot_asset: Articulation = env.scene[asset_cfg.name]
+
+    if need_robot_pose:
+        rp_l = robot_asset.data.root_pos_w[draw_ids].cpu().tolist()
+        q_l = robot_asset.data.root_quat_w[draw_ids].cpu().tolist()
+
+    if need_obstacle_pose:
         obs_l = env.scene.rigid_objects["obstacle"].data.root_pos_w[draw_ids].cpu().tolist()
 
-    # ---- Path lines (blue) -------------------------------------------------
-    all_p0: list = []
-    all_p1: list = []
-    for i, eid in enumerate(draw_ids_list):
-        valid = int(valids_l[i])
-        if valid <= 1:
-            continue
-        ox, oy = origins_l[i]
-        # One GPU→CPU transfer per env (not per point)
-        pts = e.navrl_global_path_xy[eid, :valid:path_stride].cpu().tolist()
-        for k in range(len(pts) - 1):
-            all_p0.append((pts[k][0] + ox,   pts[k][1] + oy,   0.12))
-            all_p1.append((pts[k+1][0] + ox, pts[k+1][1] + oy, 0.12))
+    # ----------------------------------------------------------------------
+    # Path lines
+    # ----------------------------------------------------------------------
+    if draw_path and origins_l is not None and valids_l is not None:
+        all_p0: list = []
+        all_p1: list = []
 
-    if all_p0:
-        draw.draw_lines(all_p0, all_p1,
-                        [(0.0, 0.4, 1.0, 1.0)] * len(all_p0),
-                        [3.0] * len(all_p0))
+        for i, eid in enumerate(draw_ids_list):
+            valid = int(valids_l[i])
+            if valid <= 1:
+                continue
 
-    # ---- Goal dots (green) -------------------------------------------------
-    goal_pts = [
-        (goals_l[i][0] + origins_l[i][0], goals_l[i][1] + origins_l[i][1], 0.35)
-        for i in range(n)
-    ]
-    if goal_pts:
-        draw.draw_points(goal_pts,
-                         [(0.0, 1.0, 0.0, 1.0)] * n,
-                         [18.0] * n)
+            ox, oy = origins_l[i]
 
-    # ---- Obstacle wireframe (orange) ---------------------------------------
-    if has_obs:
+            pts = e.navrl_global_path_xy[eid, :valid:path_stride].cpu().tolist()
+
+            for k in range(len(pts) - 1):
+                all_p0.append((pts[k][0] + ox, pts[k][1] + oy, 0.12))
+                all_p1.append((pts[k + 1][0] + ox, pts[k + 1][1] + oy, 0.12))
+
+        if all_p0:
+            draw.draw_lines(
+                all_p0,
+                all_p1,
+                [(0.0, 0.4, 1.0, 1.0)] * len(all_p0),
+                [3.0] * len(all_p0),
+            )
+
+    # ----------------------------------------------------------------------
+    # Goal marker
+    # ----------------------------------------------------------------------
+    if draw_goal and origins_l is not None and goals_l is not None:
+        goal_pts = [
+            (
+                goals_l[i][0] + origins_l[i][0],
+                goals_l[i][1] + origins_l[i][1],
+                0.35,
+            )
+            for i in range(n)
+        ]
+
+        if goal_pts:
+            draw.draw_points(
+                goal_pts,
+                [(0.0, 1.0, 0.0, 1.0)] * n,
+                [18.0] * n,
+            )
+
+    # ----------------------------------------------------------------------
+    # Obstacle wireframe
+    # ----------------------------------------------------------------------
+    if draw_obstacle and has_obs and obs_l:
         hx, hy, hz = 0.20, 0.20, 0.25
-        _corners = [(-hx,-hy,-hz),(hx,-hy,-hz),(hx,hy,-hz),(-hx,hy,-hz),
-                    (-hx,-hy, hz),(hx,-hy, hz),(hx,hy, hz),(-hx,hy, hz)]
-        _edges   = [(0,1),(1,2),(2,3),(3,0),(4,5),(5,6),(6,7),(7,4),
-                    (0,4),(1,5),(2,6),(3,7)]
+
+        corners = [
+            (-hx, -hy, -hz), (hx, -hy, -hz), (hx, hy, -hz), (-hx, hy, -hz),
+            (-hx, -hy,  hz), (hx, -hy,  hz), (hx, hy,  hz), (-hx, hy,  hz),
+        ]
+
+        edges = [
+            (0, 1), (1, 2), (2, 3), (3, 0),
+            (4, 5), (5, 6), (6, 7), (7, 4),
+            (0, 4), (1, 5), (2, 6), (3, 7),
+        ]
+
         box_p0: list = []
         box_p1: list = []
+
         for i in range(n):
             cx, cy, cz = obs_l[i]
-            wc = [(cx+dx, cy+dy, cz+dz) for dx, dy, dz in _corners]
-            for a, b in _edges:
+            wc = [(cx + dx, cy + dy, cz + dz) for dx, dy, dz in corners]
+
+            for a, b in edges:
                 box_p0.append(wc[a])
                 box_p1.append(wc[b])
+
         if box_p0:
-            draw.draw_lines(box_p0, box_p1,
-                            [(1.0, 0.4, 0.0, 1.0)] * len(box_p0),
-                            [2.5] * len(box_p0))
+            draw.draw_lines(
+                box_p0,
+                box_p1,
+                [(1.0, 0.4, 0.0, 1.0)] * len(box_p0),
+                [2.5] * len(box_p0),
+            )
 
-    # ---- Front lidar rays (ray-AABB, 270° FOV, 90 rays) -------------------
-    import math as _math
-    _angle_offsets = [135.0 - k * 270.0 / 89 for k in range(90)]
-    obs_hz = 0.25
+    # ----------------------------------------------------------------------
+    # LiDAR rays
+    # ----------------------------------------------------------------------
+    if draw_lidar and has_obs and obs_l and rp_l is not None and q_l is not None:
+        angle_offsets = [135.0 - k * 270.0 / 89 for k in range(90)]
+        obs_hz = 0.25
 
-    if has_obs:
         ray_p0: list = []
         ray_p1: list = []
         ray_colors: list = []
+
         for i in range(n):
             w_, x_, y_, z_ = q_l[i]
-            yaw = _math.atan2(2.0*(w_*z_ + x_*y_), 1.0 - 2.0*(y_*y_ + z_*z_))
+            yaw = _math.atan2(
+                2.0 * (w_ * z_ + x_ * y_),
+                1.0 - 2.0 * (y_ * y_ + z_ * z_),
+            )
+
             rx, ry, rz = rp_l[i]
+
             lx = rx + _LIDAR_FWD_X * _math.cos(yaw)
             ly = ry + _LIDAR_FWD_X * _math.sin(yaw)
             lz = rz + _LIDAR_Z_OFFS
+
             cx, cy, cz = obs_l[i]
-            for a_off in _angle_offsets:
+
+            for a_off in angle_offsets:
                 dx, dy, dz = _lidar_ray_dir(yaw, a_off, _LIDAR_PITCH_DEG)
-                hit, dist  = _ray_aabb_hit(lx, ly, lz, dx, dy, dz,
-                                           cx, cy, cz,
-                                           _OBS_HX, _OBS_HY, obs_hz,
-                                           _LIDAR_MAX_RANGE)
+
+                hit, dist = _ray_aabb_hit(
+                    lx, ly, lz,
+                    dx, dy, dz,
+                    cx, cy, cz,
+                    _OBS_HX, _OBS_HY, obs_hz,
+                    _LIDAR_MAX_RANGE,
+                )
+
                 ray_p0.append((lx, ly, lz))
-                ray_p1.append((lx + dx*dist, ly + dy*dist, lz + dz*dist))
-                ray_colors.append((1.0, 0.1, 0.1, 0.9) if hit else (0.1, 0.85, 0.1, 0.12))
+                ray_p1.append((lx + dx * dist, ly + dy * dist, lz + dz * dist))
+
+                if hit:
+                    ray_colors.append((1.0, 0.1, 0.1, 0.9))
+                else:
+                    ray_colors.append((0.1, 0.85, 0.1, 0.12))
+
         if ray_p0:
             draw.draw_lines(ray_p0, ray_p1, ray_colors, [1.2] * len(ray_p0))
-
 
 # ---------------------------------------------------------------------------
 # Path tracking reset

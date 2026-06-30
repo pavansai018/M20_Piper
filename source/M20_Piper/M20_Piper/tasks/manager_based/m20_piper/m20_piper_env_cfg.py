@@ -791,6 +791,17 @@ class M20PiperEnvCfg(ManagerBasedRLEnvCfg):
 
     # Directory containing path_*.npz files for path tracking.
     nav2_path_dataset_dir: str = mdp.nav2_path_dataset_dir
+    # Keep False for full 4096-env training.
+    debug_draw_enabled: bool = False
+
+    # These only matter when debug_draw_enabled=True.
+    debug_draw_path: bool = True
+    debug_draw_goal: bool = True
+    debug_draw_obstacle: bool = True
+    debug_draw_lidar: bool = True
+
+    debug_draw_max_envs: int = 4
+    debug_draw_path_stride: int = 3
 
     def __post_init__(self) -> None:
         self.decimation = 4
