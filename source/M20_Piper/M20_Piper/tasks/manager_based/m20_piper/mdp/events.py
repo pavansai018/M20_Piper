@@ -776,3 +776,29 @@ def arm_obstacle_controller(
                           (1.0 - t_ret)*sweep_pose   + t_ret*default_pos, targets)
 
     asset.set_joint_position_target(targets, joint_ids=arm_ids)  # type: ignore[arg-type]
+
+def hold_leg_home_position(
+    env: "ManagerBasedRLEnv",
+    env_ids: torch.Tensor,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> None:
+    """Force hip/knee joints to stay at their default init pose.
+
+    PPO is only supposed to learn wheel velocity control.
+    Hip/knee joints are treated as a fixed suspension/stance.
+    """
+    e: Any = env
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    if not hasattr(e, "_leg_home_joint_ids"):
+        from M20_Piper.tasks.manager_based.m20_piper.mdp.config import leg_joint_names
+        ids, _ = asset.find_joints(leg_joint_names)
+        e._leg_home_joint_ids = ids
+
+    leg_ids = e._leg_home_joint_ids
+
+    # default_joint_pos comes from M20_PIPER_CFG.init_state.joint_pos
+    targets = asset.data.default_joint_pos[:, leg_ids]
+
+    # Apply position targets every control step.
+    asset.set_joint_position_target(targets, joint_ids=leg_ids)  # type: ignore[arg-type]

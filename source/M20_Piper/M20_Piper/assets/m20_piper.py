@@ -64,12 +64,12 @@ M20_PIPER_CFG = ArticulationCfg(
             joint_names_expr=['.*hipx_joint', '.*hipy_joint', '.*knee_joint'],
             effort_limit=76.4,
             velocity_limit=22.4,
-            stiffness=80.0,
-            damping=8.0,
+            stiffness=1400.0,
+            damping=90.0,
             friction=0.0,
             armature=0.0,
             min_delay=0,
-            max_delay=1,
+            max_delay=0, # made 0 because it is fixed position holding. ppo will not control it as of now
         ),
         'wheel': DelayedPDActuatorCfg(
             joint_names_expr=['.*_wheel_joint'],
