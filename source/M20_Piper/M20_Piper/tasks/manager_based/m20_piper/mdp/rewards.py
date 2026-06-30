@@ -542,3 +542,66 @@ def path_forward_velocity_when_front_clear(
 
     clear = center_min >= trigger_range
     return reward * clear.float()
+
+def stop_when_front_blocked_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    obstacle_name: str = "obstacle",
+    trigger_range: float = 1.50,
+    max_range: float = 5.0,
+) -> torch.Tensor:
+    """Penalize base motion when the front LiDAR sector is blocked.
+
+    This teaches:
+        obstacle in front -> stop base
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    center_min = _front_center_min_from_scan(
+        env,
+        asset_cfg=asset_cfg,
+        obstacle_name=obstacle_name,
+        max_range=max_range,
+    )
+
+    front_blocked = center_min < trigger_range
+    base_speed = torch.norm(asset.data.root_lin_vel_w[:, :2], dim=1)
+
+    return front_blocked.float() * base_speed
+
+def arm_home_when_clear_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    obstacle_name: str = "obstacle",
+    trigger_range: float = 1.50,
+    max_range: float = 5.0,
+) -> torch.Tensor:
+    """Penalize unnecessary arm movement when the front path is clear.
+
+    This teaches:
+        front clear -> keep arm near home
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    center_min = _front_center_min_from_scan(
+        env,
+        asset_cfg=asset_cfg,
+        obstacle_name=obstacle_name,
+        max_range=max_range,
+    )
+
+    front_clear = center_min >= trigger_range
+
+    if not hasattr(env, "_arm_home_penalty_joint_ids"):
+        from M20_Piper.tasks.manager_based.m20_piper.mdp.config import arm_joint_names
+        arm_ids, _ = asset.find_joints(arm_joint_names)
+        env._arm_home_penalty_joint_ids = arm_ids  # type: ignore
+
+    arm_ids = env._arm_home_penalty_joint_ids  # type: ignore
+
+    arm_deviation = torch.norm(
+        asset.data.joint_pos[:, arm_ids] - asset.data.default_joint_pos[:, arm_ids],
+        dim=1,
+    )
+
+    return front_clear.float() * arm_deviation
