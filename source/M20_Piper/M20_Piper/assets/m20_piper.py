@@ -11,7 +11,9 @@ M20_PIPER_CFG = ArticulationCfg(
         fix_base=False,
         copy_from_source=False,
         activate_contact_sensors=True,
-        merge_fixed_joints=False,
+        # the arm and lidar are fixed to baselink. keeping fixed links seperate
+        # while self collisions are enabled can create spawn-time internal contacts
+        merge_fixed_joints=True,
         replace_cylinders_with_capsules=True,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
@@ -19,12 +21,12 @@ M20_PIPER_CFG = ArticulationCfg(
             linear_damping=0.0,
             max_angular_velocity=1000.0,
             max_linear_velocity=1000.0,
-            max_depenetration_velocity=1.0,
+            max_depenetration_velocity=0.5,
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=True,
-            solver_position_iteration_count=8,
-            solver_velocity_iteration_count=1,
+            enabled_self_collisions=False,
+            solver_position_iteration_count=12,
+            solver_velocity_iteration_count=4,
         ),
 
         joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
@@ -36,7 +38,7 @@ M20_PIPER_CFG = ArticulationCfg(
         
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.475,),
+        pos=(0.0, 0.0, 0.4725,),
         joint_pos={
             '.*hipx_joint': 0.0,
             'f[l,r]_hipy_joint': -0.70,
@@ -44,7 +46,14 @@ M20_PIPER_CFG = ArticulationCfg(
             'f[l,r]_knee_joint': 1.4,
             'h[l,r]_knee_joint': -1.4,
             '.*_wheel_joint': 0.0,
-            'joint[1-8]':0.0,
+            'joint1':0.0,
+            'joint2': 0.2,
+            'joint3': -0.35,
+            'joint4': 0.0,
+            'joint5': 0.2,
+            'joint6': 0.0,
+            'joint7': 0.01,
+            'joint8': -0.01,
         },
         joint_vel={'.*': 0.0,},
 
