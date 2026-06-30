@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import torch
+from isaaclab.utils.math import quat_apply_inverse
 
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
@@ -67,11 +68,7 @@ def path_deviation_too_large(
     max_cte: float = 1.25,
     settle_steps: int = 30,
 ) -> torch.Tensor:
-    """Terminate if robot leaves the global path too far.
-
-    This prevents:
-        obstacle appears -> robot bypasses -> never returns -> keeps moving forward.
-    """
+    """Terminate if robot leaves the global path too far."""
     e: Any = env
 
     if not hasattr(e, "navrl_global_path_xy"):
@@ -97,3 +94,43 @@ def path_deviation_too_large(
     cte = torch.abs(torch.sum((robot_xy - p0) * normal, dim=-1))
 
     return (cte > max_cte) & (env.episode_length_buf > settle_steps)
+
+def arm_body_collision_zone(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    arm_body_names: tuple[str, ...] = ("link5", "link6", "link7", "link8"),
+    base_half_x: float = 0.38,
+    base_half_y: float = 0.30,
+    z_min: float = -0.10,
+    z_max: float = 0.45,
+    settle_steps: int = 20,
+) -> torch.Tensor:
+    """Terminate if distal arm/gripper links enter robot body safety box."""
+    e: Any = env
+    asset = env.scene[asset_cfg.name]
+
+    if not hasattr(e, "_arm_body_collision_term_ids"):
+        ids, _ = asset.find_bodies(list(arm_body_names))
+        e._arm_body_collision_term_ids = ids
+
+    body_ids = e._arm_body_collision_term_ids
+
+    if len(body_ids) == 0:
+        return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+
+    arm_pos_w = asset.data.body_pos_w[:, body_ids, :]
+    rel_w = arm_pos_w - asset.data.root_pos_w[:, None, :]
+
+    q = asset.data.root_quat_w[:, None, :].expand(-1, len(body_ids), -1)
+    rel_b = quat_apply_inverse(
+        q.reshape(-1, 4),
+        rel_w.reshape(-1, 3),
+    ).reshape(env.num_envs, len(body_ids), 3)
+
+    inside_x = torch.abs(rel_b[..., 0]) < base_half_x
+    inside_y = torch.abs(rel_b[..., 1]) < base_half_y
+    inside_z = (rel_b[..., 2] > z_min) & (rel_b[..., 2] < z_max)
+
+    violation = (inside_x & inside_y & inside_z).any(dim=1)
+
+    return violation & (env.episode_length_buf > settle_steps)
