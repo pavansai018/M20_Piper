@@ -352,7 +352,7 @@ class EventCfg:
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
-    
+
     randomize_actuator_gains = EventTerm(
         func=mdp.randomize_actuator_gains,  # type: ignore
         mode="reset",
@@ -363,6 +363,12 @@ class EventCfg:
             "operation": "scale",
             "distribution": "uniform",
         },
+    )
+
+    reset_arm_state = EventTerm(
+        func=mdp.reset_arm_controller_state,
+        mode="reset",
+        params={},
     )
 
     # Path reset — runs AFTER joint/base resets so robot state is valid.
@@ -404,11 +410,11 @@ class EventCfg:
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "obstacle_name": "obstacle",
-            "detection_range": 0.9,
-            "detection_lat_half": 0.35,
-            "extend_duration_s": 1.2,
-            "sweep_duration_s": 2.0,
-            "retract_duration_s": 1.0,
+            "detection_range": 1.15,
+            "detection_lat_half": 0.40,
+            "extend_duration_s": 0.8,
+            "sweep_duration_s": 1.2,
+            "retract_duration_s": 0.8,
         },
     )
 
@@ -573,13 +579,36 @@ class RewardsCfg:
     )
     path_heading = RewTerm(
         func=mdp.path_heading_alignment,
-        weight=0.5,
+        weight=2.0,
         params={"asset_cfg": SceneEntityCfg("robot"), "lookahead": 4},
+    )
+
+    path_forward_velocity = RewTerm(
+        func=mdp.path_forward_velocity,
+        weight=4.0,
+        params={"asset_cfg": SceneEntityCfg("robot"), "lookahead": 4, "max_speed": 1.0},
+    )
+
+    path_reverse_velocity_penalty = RewTerm(
+        func=mdp.path_reverse_velocity_penalty,
+        weight=-8.0,
+        params={"asset_cfg": SceneEntityCfg("robot"), "lookahead": 4, "max_speed": 1.0},
     )
     goal_reached = RewTerm(
         func=mdp.goal_reached_bonus,
         weight=1.0,
         params={"asset_cfg": SceneEntityCfg("robot"), "threshold": 0.4, "bonus": 120.0},
+    )
+
+    body_obstacle_push_penalty = RewTerm(
+        func=mdp.body_obstacle_push_penalty,
+        weight=-40.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "obstacle_name": "obstacle",
+            "front_limit": 0.50,
+            "lat_half": 0.38,
+        },
     )
 
 

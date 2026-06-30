@@ -590,7 +590,20 @@ def reset_path_tracking(
     root_state[:, 2] = origins[:, 2] + asset.data.default_root_state[env_ids, 2]
 
     # Apply start yaw from path + small noise
-    yaw = starts[:, 2] + (torch.rand(len(env_ids), device=env.device) - 0.5) * 0.4
+    # Apply start yaw from actual path tangent, not from dataset yaw.
+    # This prevents spawning opposite to the path direction when dataset start yaw is bad.
+    look_idx = torch.full_like(valid_counts, 5)
+    look_idx = torch.minimum(look_idx, (valid_counts - 1).clamp(min=1))
+
+    p0 = paths[:, 0, :]  # [N, 2]
+    p1 = paths.gather(
+        1,
+        look_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, 1, 2)
+    ).squeeze(1)
+
+    path_start_yaw = torch.atan2(p1[:, 1] - p0[:, 1], p1[:, 0] - p0[:, 0])
+
+    yaw = path_start_yaw + (torch.rand(len(env_ids), device=env.device) - 0.5) * 0.20
     cos_y = torch.cos(yaw / 2)
     sin_y = torch.sin(yaw / 2)
     zeros = torch.zeros_like(yaw)
@@ -663,7 +676,52 @@ def reset_obstacle_on_path(
 
     obstacle.write_root_state_to_sim(all_states[env_ids], env_ids=env_ids)  # type: ignore[arg-type]
 
+def _yaw_from_quat_wxyz(q: torch.Tensor) -> torch.Tensor:
+    """Quaternion wxyz -> yaw."""
+    w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+    return torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
+
+def _obstacle_xy_in_robot_frame(
+    robot_pos_w: torch.Tensor,
+    robot_quat_w: torch.Tensor,
+    obs_pos_w: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Obstacle center in robot body frame.
+
+    Returns:
+        bx: forward distance
+        by: lateral distance
+    """
+    yaw = _yaw_from_quat_wxyz(robot_quat_w)
+
+    dx = obs_pos_w[:, 0] - robot_pos_w[:, 0]
+    dy = obs_pos_w[:, 1] - robot_pos_w[:, 1]
+
+    cos_y = torch.cos(yaw)
+    sin_y = torch.sin(yaw)
+
+    bx = cos_y * dx + sin_y * dy
+    by = -sin_y * dx + cos_y * dy
+
+    return bx, by
+
+
+def reset_arm_controller_state(
+    env: "ManagerBasedRLEnv",
+    env_ids: torch.Tensor,
+) -> None:
+    """Hard-reset scripted arm state every episode."""
+    e: Any = env
+
+    if not hasattr(e, "_arm_state"):
+        e._arm_state = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+        e._arm_phase_timer = torch.zeros(env.num_envs, device=env.device)
+        e._arm_detect_count = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+
+    e._arm_state[env_ids] = 0
+    e._arm_phase_timer[env_ids] = 0.0
+    e._arm_detect_count[env_ids] = 0
 # ---------------------------------------------------------------------------
 # Arm obstacle sub-controller (forward-lidar triggered, fully scripted)
 # ---------------------------------------------------------------------------
@@ -672,8 +730,8 @@ def reset_obstacle_on_path(
 #   joint1=base-yaw  joint2=shoulder  joint3=elbow
 #   joint4=forearm-rot  joint5=wrist  joint6=wrist-rot
 # Respect URDF limits: joint2 must be >= 0, joint3 must be <= 0.
-_ARM_EXTEND_POSE = torch.tensor([ 0.0,  0.35, -1.10, 0.0, 0.80, 0.0])
-_ARM_SWEEP_POSE  = torch.tensor([-0.8,  0.35, -1.10, 0.0, 0.80, 0.0])
+_ARM_EXTEND_POSE = torch.tensor([0.0, 0.35, -1.10, 0.0, 0.80, 0.0])
+_ARM_SWEEP_POSE  = torch.tensor([-0.9, 0.35, -1.10, 0.0, 0.80, 0.0])
 
 def arm_obstacle_controller(
     env: "ManagerBasedRLEnv",
@@ -720,16 +778,46 @@ def arm_obstacle_controller(
     # --- GPU-vectorised forward-lidar detection --------------------------------
     # All envs × all 11 rays processed as a single batched tensor op on GPU.
     # Zero Python loops — scales to any number of envs at negligible cost.
+    # obstacle = env.scene.rigid_objects[obstacle_name]
+    # detected = _detect_obstacle_batch(
+    #     robot_pos_w      = asset.data.root_pos_w,
+    #     robot_quat_w     = asset.data.root_quat_w,
+    #     obs_pos_w        = obstacle.data.root_pos_w,
+    #     idle_mask        = e._arm_state == 0,
+    #     detection_range  = detection_range,
+    #     detection_lat_half = detection_lat_half,
+    #     obs_hx = _OBS_HX, obs_hy = _OBS_HY, obs_hz = 0.25,
+    # )
+
     obstacle = env.scene.rigid_objects[obstacle_name]
-    detected = _detect_obstacle_batch(
-        robot_pos_w      = asset.data.root_pos_w,
-        robot_quat_w     = asset.data.root_quat_w,
-        obs_pos_w        = obstacle.data.root_pos_w,
-        idle_mask        = e._arm_state == 0,
-        detection_range  = detection_range,
-        detection_lat_half = detection_lat_half,
-        obs_hx = _OBS_HX, obs_hy = _OBS_HY, obs_hz = 0.25,
+
+    # Use obstacle center in robot body frame.
+    # This is more stable than the current simulated lidar ray test.
+    obs_bx, obs_by = _obstacle_xy_in_robot_frame(
+        asset.data.root_pos_w,
+        asset.data.root_quat_w,
+        obstacle.data.root_pos_w,
     )
+
+    idle_mask = e._arm_state == 0
+
+    detected_now = (
+        idle_mask
+        & (env.episode_length_buf > 20)
+        & (obs_bx > 0.20)
+        & (obs_bx < detection_range)
+        & (torch.abs(obs_by) < detection_lat_half)
+    )
+
+    # Debounce: obstacle must be detected for multiple control steps.
+    # This prevents random arm movement from one-frame false triggers.
+    e._arm_detect_count = torch.where(
+        detected_now,
+        e._arm_detect_count + 1,
+        torch.zeros_like(e._arm_detect_count),
+    )
+
+    detected = e._arm_detect_count >= 4
 
     # --- State transitions ---------------------------------------------------
     idle    = e._arm_state == 0
@@ -740,6 +828,7 @@ def arm_obstacle_controller(
     to_extend  = idle & detected
     e._arm_state[to_extend]       = 1
     e._arm_phase_timer[to_extend] = 0.0
+    e._arm_detect_count[to_extend] = 0
 
     to_sweep   = extend  & (e._arm_phase_timer >= extend_duration_s)
     e._arm_state[to_sweep]        = 2
@@ -776,6 +865,23 @@ def arm_obstacle_controller(
                           (1.0 - t_ret)*sweep_pose   + t_ret*default_pos, targets)
 
     asset.set_joint_position_target(targets, joint_ids=arm_ids)  # type: ignore[arg-type]
+    # Stop wheels while the arm is clearing the obstacle.
+    # This prevents the base from using its body to deflect the obstacle.
+    if not hasattr(e, "_wheel_joint_ids_for_arm_stop"):
+        from M20_Piper.tasks.manager_based.m20_piper.mdp.config import wheel_joint_names
+        wheel_ids, _ = asset.find_joints(wheel_joint_names)
+        e._wheel_joint_ids_for_arm_stop = wheel_ids
+
+    wheel_ids = e._wheel_joint_ids_for_arm_stop
+    active_ids = torch.nonzero(e._arm_state > 0, as_tuple=False).squeeze(-1)
+
+    if active_ids.numel() > 0:
+        zero_wheel_vel = torch.zeros((active_ids.numel(), len(wheel_ids)), device=env.device)
+        asset.set_joint_velocity_target(
+            zero_wheel_vel,
+            joint_ids=wheel_ids,
+            env_ids=active_ids, # type: ignore
+        )
 
 def hold_leg_home_position(
     env: "ManagerBasedRLEnv",
