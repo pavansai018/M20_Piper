@@ -14,7 +14,7 @@ M20_PIPER_CFG = ArticulationCfg(
         # the arm and lidar are fixed to baselink. keeping fixed links seperate
         # while self collisions are enabled can create spawn-time internal contacts
         merge_fixed_joints=True,
-        replace_cylinders_with_capsules=True,
+        replace_cylinders_with_capsules=False,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
             retain_accelerations=False,

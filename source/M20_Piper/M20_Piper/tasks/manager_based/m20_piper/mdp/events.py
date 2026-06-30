@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Literal
 
 import torch
-
+import math
 import isaaclab.utils.math as math_utils
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
@@ -142,9 +142,9 @@ def bad_orientation_2(
 ) -> torch.Tensor:
     # Skip first 10 steps so the contact-sensor history and leg springs can settle
     # after each episode reset before we start checking orientation.
-    settling = env.episode_length_buf < 50
+    settling = env.episode_length_buf < 100
     asset: RigidObject = env.scene[asset_cfg.name]
-    bad = (asset.data.projected_gravity_b[:, 2] > -0.2) | (asset.data.projected_gravity_b[:, :2].abs() > 0.85).any(-1)
+    bad = (asset.data.projected_gravity_b[:, 2] > -0.1) | (asset.data.projected_gravity_b[:, :2].abs() > 0.92).any(-1)
     return bad & ~settling
 
 
@@ -791,23 +791,54 @@ def arm_obstacle_controller(
 
     obstacle = env.scene.rigid_objects[obstacle_name]
 
-    # Use obstacle center in robot body frame.
-    # This is more stable than the current simulated lidar ray test.
-    obs_bx, obs_by = _obstacle_xy_in_robot_frame(
-        asset.data.root_pos_w,
-        asset.data.root_quat_w,
-        obstacle.data.root_pos_w,
+    # ------------------------------------------------------------
+    # FRONT-LIDAR-ONLY OBSTACLE DETECTION
+    # ------------------------------------------------------------
+    # Sim: synthesize front scan ranges from the obstacle.
+    # Real robot: replace this tensor with processed /scan sector ranges.
+    scan_ranges = _front_lidar_ranges_from_box_batch(
+        robot_pos_w=asset.data.root_pos_w,
+        robot_quat_w=asset.data.root_quat_w,
+        obs_pos_w=obstacle.data.root_pos_w,
+        max_range=_LIDAR_MAX_RANGE,
+        obs_hx=_OBS_HX,
+        obs_hy=_OBS_HY,
+        obs_hz=0.25,
     )
+
+    # Store for debug logging.
+    e._front_lidar_ranges = scan_ranges
 
     idle_mask = e._arm_state == 0
 
+    center = _FRONT_SCAN_RAY_COUNT // 2
+    center_ranges = scan_ranges[:, center - 3 : center + 4]
+
+    front_min = torch.min(scan_ranges, dim=1).values
+    center_min = torch.min(center_ranges, dim=1).values
+    num_close_rays = torch.sum(scan_ranges < detection_range, dim=1)
+
+    # True obstacle trigger:
+    #   1. obstacle must be close in front scan
+    #   2. multiple rays must agree
+    #   3. detection must persist for debounce steps
     detected_now = (
         idle_mask
         & (env.episode_length_buf > 20)
-        & (obs_bx > 0.20)
-        & (obs_bx < detection_range)
-        & (torch.abs(obs_by) < detection_lat_half)
+        & (center_min < detection_range)
+        & (num_close_rays >= 3)
     )
+
+    if not hasattr(e, "_arm_detect_count"):
+        e._arm_detect_count = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+
+    e._arm_detect_count = torch.where(
+        detected_now,
+        e._arm_detect_count + 1,
+        torch.zeros_like(e._arm_detect_count),
+    )
+
+    detected = e._arm_detect_count >= 3
 
     # Debounce: obstacle must be detected for multiple control steps.
     # This prevents random arm movement from one-frame false triggers.
@@ -873,7 +904,16 @@ def arm_obstacle_controller(
         e._wheel_joint_ids_for_arm_stop = wheel_ids
 
     wheel_ids = e._wheel_joint_ids_for_arm_stop
-    active_ids = torch.nonzero(e._arm_state > 0, as_tuple=False).squeeze(-1)
+    # Stop not only while arm is active, but also while front lidar is blocked.
+    # This prevents the learned base policy from bypassing before the arm starts.
+    front_blocked = (
+        (center_min < detection_range)
+        & (num_close_rays >= 3)
+        & (env.episode_length_buf > 20)
+    )
+
+    must_stop = (e._arm_state > 0) | front_blocked
+    active_ids = torch.nonzero(must_stop, as_tuple=False).squeeze(-1)
 
     if active_ids.numel() > 0:
         zero_wheel_vel = torch.zeros((active_ids.numel(), len(wheel_ids)), device=env.device)
@@ -888,11 +928,7 @@ def hold_leg_home_position(
     env_ids: torch.Tensor,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> None:
-    """Force hip/knee joints to stay at their default init pose.
-
-    PPO is only supposed to learn wheel velocity control.
-    Hip/knee joints are treated as a fixed suspension/stance.
-    """
+    """Hold hip/knee joints at default stance using position + zero velocity targets."""
     e: Any = env
     asset: Articulation = env.scene[asset_cfg.name]
 
@@ -903,8 +939,91 @@ def hold_leg_home_position(
 
     leg_ids = e._leg_home_joint_ids
 
-    # default_joint_pos comes from M20_PIPER_CFG.init_state.joint_pos
-    targets = asset.data.default_joint_pos[:, leg_ids]
+    pos_target = asset.data.default_joint_pos[:, leg_ids]
+    vel_target = torch.zeros_like(pos_target)
 
-    # Apply position targets every control step.
-    asset.set_joint_position_target(targets, joint_ids=leg_ids)  # type: ignore[arg-type]
+    asset.set_joint_position_target(pos_target, joint_ids=leg_ids)  # type: ignore[arg-type]
+    asset.set_joint_velocity_target(vel_target, joint_ids=leg_ids)  # type: ignore[arg-type]
+
+
+
+
+_FRONT_SCAN_RAY_COUNT = 31
+_FRONT_SCAN_FOV_DEG = 80.0
+
+
+def _front_lidar_ranges_from_box_batch(
+    robot_pos_w: torch.Tensor,
+    robot_quat_w: torch.Tensor,
+    obs_pos_w: torch.Tensor,
+    max_range: float,
+    obs_hx: float,
+    obs_hy: float,
+    obs_hz: float,
+) -> torch.Tensor:
+    """Simulated front lidar ranges.
+
+    Training/sim uses obstacle pose only to generate synthetic lidar ranges.
+    The arm controller must consume only these ranges.
+
+    Real deployment replacement:
+        publish real /scan sector ranges into the same logic.
+    """
+    device = robot_pos_w.device
+    num_envs = robot_pos_w.shape[0]
+    k = _FRONT_SCAN_RAY_COUNT
+
+    q = robot_quat_w
+    w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+    yaw = torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+    sensor = torch.stack(
+        [
+            robot_pos_w[:, 0] + _LIDAR_FWD_X * torch.cos(yaw),
+            robot_pos_w[:, 1] + _LIDAR_FWD_X * torch.sin(yaw),
+            robot_pos_w[:, 2] + _LIDAR_Z_OFFS,
+        ],
+        dim=1,
+    )
+
+    offsets = torch.linspace(
+        -math.radians(_FRONT_SCAN_FOV_DEG) * 0.5,
+        math.radians(_FRONT_SCAN_FOV_DEG) * 0.5,
+        k,
+        device=device,
+    )
+
+    ray_yaw = yaw.unsqueeze(1) + offsets.unsqueeze(0)
+
+    dirs = torch.stack(
+        [
+            torch.cos(ray_yaw) * _DETECT_CP,
+            torch.sin(ray_yaw) * _DETECT_CP,
+            torch.full((num_envs, k), _DETECT_SP, device=device),
+        ],
+        dim=2,
+    )
+
+    half_ext = torch.tensor([obs_hx, obs_hy, obs_hz], device=device)
+    obs_lo = (obs_pos_w - half_ext).unsqueeze(1)
+    obs_hi = (obs_pos_w + half_ext).unsqueeze(1)
+    sensor_exp = sensor.unsqueeze(1)
+
+    safe_dirs = torch.where(
+        dirs.abs() < 1e-9,
+        torch.full_like(dirs, 1e-9),
+        dirs,
+    )
+
+    t0 = (obs_lo - sensor_exp) / safe_dirs
+    t1 = (obs_hi - sensor_exp) / safe_dirs
+
+    t_enter = torch.min(t0, t1).max(dim=2).values
+    t_exit = torch.max(t0, t1).min(dim=2).values
+
+    hit = (t_enter < t_exit) & (t_enter > 0.05) & (t_enter < max_range)
+
+    ranges = torch.full((num_envs, k), max_range, device=device)
+    ranges = torch.where(hit, t_enter, ranges)
+
+    return ranges
