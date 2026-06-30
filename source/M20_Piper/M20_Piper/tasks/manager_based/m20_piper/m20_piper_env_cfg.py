@@ -481,6 +481,19 @@ class EventCfg:
         params={"obstacle_name": "obstacle", "path_frac_min": 0.3, "path_frac_max": 0.7},
     )
 
+    reset_stage2_obstacle = EventTerm(
+        func=mdp.reset_obstacle_stage2_arm_reach,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "obstacle_name": "obstacle",
+            "x_min": 0.48,
+            "x_max": 0.56,
+            "y_noise": 0.03,
+            "z": 0.25,
+        },
+    )
+
     # Path + obstacle debug visualisation
     draw_path_reset = EventTerm(
         func=mdp.draw_path_debug,
