@@ -93,3 +93,82 @@ def path_deviation_too_large(
     cte = torch.abs(torch.sum((robot_xy - p0) * normal, dim=-1))
 
     return (cte > max_cte) & (env.episode_length_buf > settle_steps)
+
+def bypassing_path_obstacle(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    obstacle_name: str = "obstacle",
+    max_cte_while_blocked: float = 0.28,
+    max_heading_error_while_blocked: float = 0.75,
+    settle_steps: int = 30,
+) -> torch.Tensor:
+    """Terminate if robot tries to bypass an obstacle that is in the path corridor.
+
+    This prevents:
+        obstacle on path -> robot deviates early -> front LiDAR becomes clear -> reaches goal
+
+    The condition is based on LiDAR + path corridor, not obstacle ground truth.
+    """
+    from .observations import lidar_path_corridor_blocked, path_cross_track_error, path_heading_error
+
+    path_blocked = lidar_path_corridor_blocked(
+        env,
+        asset_cfg=asset_cfg,
+        obstacle_name=obstacle_name,
+        min_ahead_m=0.30,
+        max_ahead_m=3.00,
+        corridor_half_width=0.30,
+    )
+
+    cte = torch.abs(
+        path_cross_track_error(
+            env,
+            asset_cfg=asset_cfg,
+            lookahead=4,
+            normalize_dist=1.0,
+        ).squeeze(1)
+    )
+
+    heading_err = torch.abs(
+        path_heading_error(
+            env,
+            asset_cfg=asset_cfg,
+            lookahead=4,
+        ).squeeze(1)
+    )
+
+    bypassing = (
+        (cte > max_cte_while_blocked)
+        | (heading_err > max_heading_error_while_blocked)
+    )
+
+    return path_blocked & bypassing & (env.episode_length_buf > settle_steps)
+
+def base_motion_when_arm_reach_blocked(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    obstacle_name: str = "obstacle",
+    max_xy_speed: float = 0.06,
+    max_yaw_rate: float = 0.12,
+    settle_steps: int = 30,
+) -> torch.Tensor:
+    """Terminate if base moves when path obstacle is inside arm-clearing zone."""
+    from .observations import lidar_path_corridor_blocked
+
+    arm_zone_blocked = lidar_path_corridor_blocked(
+        env,
+        asset_cfg=asset_cfg,
+        obstacle_name=obstacle_name,
+        min_ahead_m=0.25,
+        max_ahead_m=1.10,
+        corridor_half_width=0.30,
+    )
+
+    asset = env.scene[asset_cfg.name]
+
+    xy_speed = torch.norm(asset.data.root_lin_vel_w[:, :2], dim=1)
+    yaw_rate = torch.abs(asset.data.root_ang_vel_b[:, 2])
+
+    base_moving = (xy_speed > max_xy_speed) | (yaw_rate > max_yaw_rate)
+
+    return arm_zone_blocked & base_moving & (env.episode_length_buf > settle_steps)

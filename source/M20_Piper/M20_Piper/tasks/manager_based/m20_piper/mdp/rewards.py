@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 # re-use path helpers from observations (single source of truth)
-from .observations import _robot_xy_local, _robot_yaw, _nearest_path_index, _wrap_to_pi
+from .observations import _robot_xy_local, _robot_yaw, _nearest_path_index, _wrap_to_pi, lidar_path_corridor_blocked
 
 
 # Global curriculum scalar in [0, 1], updated from terrain-level mean.
@@ -194,6 +194,56 @@ def path_progress(
 
     return delta
 
+def path_progress_unless_arm_reach_blocked(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    obstacle_name: str = "obstacle",
+    max_step_reward: float = 0.025,
+) -> torch.Tensor:
+    from .observations import lidar_path_corridor_blocked
+
+    progress = path_progress(
+        env,
+        asset_cfg=asset_cfg,
+        max_step_reward=max_step_reward,
+    )
+
+    arm_zone_blocked = lidar_path_corridor_blocked(
+        env,
+        asset_cfg=asset_cfg,
+        obstacle_name=obstacle_name,
+        min_ahead_m=0.25,
+        max_ahead_m=1.10,
+        corridor_half_width=0.30,
+    )
+
+    return progress * (~arm_zone_blocked).float()
+
+def path_forward_velocity_unless_arm_reach_blocked(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    obstacle_name: str = "obstacle",
+    lookahead: int = 4,
+    max_speed: float = 0.35,
+) -> torch.Tensor:
+
+    reward = path_forward_velocity(
+        env,
+        asset_cfg=asset_cfg,
+        lookahead=lookahead,
+        max_speed=max_speed,
+    )
+
+    arm_zone_blocked = lidar_path_corridor_blocked(
+        env,
+        asset_cfg=asset_cfg,
+        obstacle_name=obstacle_name,
+        min_ahead_m=0.25,
+        max_ahead_m=1.10,
+        corridor_half_width=0.30,
+    )
+
+    return reward * (~arm_zone_blocked).float()
 
 def path_cross_track_penalty(
     env: ManagerBasedRLEnv,
@@ -412,68 +462,6 @@ def _front_center_min_from_scan(
     return torch.min(ranges[:, front_mask], dim=1).values
 
 
-def front_clearance_delta_reward(
-    env: ManagerBasedRLEnv,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    obstacle_name: str = "obstacle",
-    trigger_range: float = 1.50,
-    max_range: float = 5.0,
-    min_arm_deviation: float = 0.10,
-    stopped_speed: float = 0.15,
-) -> torch.Tensor:
-    """Reward the arm only when it improves front LiDAR clearance.
-
-    This is the main reward that teaches:
-        obstacle in front -> stop -> move arm -> front scan becomes clear.
-    """
-    asset: Articulation = env.scene[asset_cfg.name]
-
-    curr_min = _front_center_min_from_scan(
-        env,
-        asset_cfg=asset_cfg,
-        obstacle_name=obstacle_name,
-        max_range=max_range,
-    )
-
-    if not hasattr(env, "_prev_front_center_min"):
-        env._prev_front_center_min = curr_min.detach().clone() # type: ignore
-
-    prev_min = env._prev_front_center_min # type: ignore
-
-    # Avoid cross-episode stale delta.
-    reset_mask = env.episode_length_buf <= 1
-    prev_min = torch.where(reset_mask, curr_min.detach(), prev_min)
-
-    delta = curr_min - prev_min
-    env._prev_front_center_min = curr_min.detach() # type: ignore
-
-    if not hasattr(env, "_clearance_arm_joint_ids"):
-        from M20_Piper.tasks.manager_based.m20_piper.mdp.config import arm_joint_names
-        arm_ids, _ = asset.find_joints(arm_joint_names)
-        env._clearance_arm_joint_ids = arm_ids # type: ignore
-
-    arm_ids = env._clearance_arm_joint_ids # type: ignore
-
-    arm_dev = torch.norm(
-        asset.data.joint_pos[:, arm_ids] - asset.data.default_joint_pos[:, arm_ids],
-        dim=1,
-    )
-
-    base_speed = torch.norm(asset.data.root_lin_vel_w[:, :2], dim=1)
-
-    was_blocked = prev_min < trigger_range
-    arm_active = arm_dev > min_arm_deviation
-    base_stopped = base_speed < stopped_speed
-
-    # Positive only when clearance increases while the base is stopped and arm moved.
-    return (
-        torch.clamp(delta, min=0.0, max=0.50)
-        * was_blocked.float()
-        * arm_active.float()
-        * base_stopped.float()
-    )
-
-
 def front_blocked_persistence_penalty(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
@@ -490,58 +478,6 @@ def front_blocked_persistence_penalty(
     )
     return (center_min < trigger_range).float()
 
-def path_progress_when_front_clear(
-    env: ManagerBasedRLEnv,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    obstacle_name: str = "obstacle",
-    trigger_range: float = 1.50,
-    max_range: float = 5.0,
-    max_step_reward: float = 0.025,
-) -> torch.Tensor:
-    """Path progress only when front LiDAR is not blocked."""
-    progress = path_progress(
-        env,
-        asset_cfg=asset_cfg,
-        max_step_reward=max_step_reward,
-    )
-
-    center_min = _front_center_min_from_scan(
-        env,
-        asset_cfg=asset_cfg,
-        obstacle_name=obstacle_name,
-        max_range=max_range,
-    )
-
-    clear = center_min >= trigger_range
-    return progress * clear.float()
-
-
-def path_forward_velocity_when_front_clear(
-    env: ManagerBasedRLEnv,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    obstacle_name: str = "obstacle",
-    trigger_range: float = 1.50,
-    max_range: float = 5.0,
-    lookahead: int = 4,
-    max_speed: float = 0.35,
-) -> torch.Tensor:
-    """Forward velocity reward only when front LiDAR is not blocked."""
-    reward = path_forward_velocity(
-        env,
-        asset_cfg=asset_cfg,
-        lookahead=lookahead,
-        max_speed=max_speed,
-    )
-
-    center_min = _front_center_min_from_scan(
-        env,
-        asset_cfg=asset_cfg,
-        obstacle_name=obstacle_name,
-        max_range=max_range,
-    )
-
-    clear = center_min >= trigger_range
-    return reward * clear.float()
 
 def stop_when_front_blocked_penalty(
     env: ManagerBasedRLEnv,
@@ -605,3 +541,74 @@ def arm_home_when_clear_penalty(
     )
 
     return front_clear.float() * arm_deviation
+
+def path_corridor_clearance_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    obstacle_name: str = "obstacle",
+    min_arm_deviation: float = 0.10,
+    stopped_speed: float = 0.06,
+    stopped_yaw_rate: float = 0.12,
+) -> torch.Tensor:
+    """Reward arm only when it clears LiDAR obstacle from the path corridor."""
+    from .observations import lidar_path_corridor_blocked
+
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    arm_zone_blocked = lidar_path_corridor_blocked(
+        env,
+        asset_cfg=asset_cfg,
+        obstacle_name=obstacle_name,
+        min_ahead_m=0.25,
+        max_ahead_m=1.10,
+        corridor_half_width=0.30,
+    )
+
+    wider_path_blocked = lidar_path_corridor_blocked(
+        env,
+        asset_cfg=asset_cfg,
+        obstacle_name=obstacle_name,
+        min_ahead_m=0.25,
+        max_ahead_m=1.60,
+        corridor_half_width=0.35,
+    )
+
+    if not hasattr(env, "_prev_arm_zone_blocked"):
+        env._prev_arm_zone_blocked = arm_zone_blocked.detach().clone()  # type: ignore
+
+    prev_blocked = env._prev_arm_zone_blocked  # type: ignore
+    env._prev_arm_zone_blocked = arm_zone_blocked.detach()  # type: ignore
+
+    if not hasattr(env, "_path_clear_arm_joint_ids"):
+        from M20_Piper.tasks.manager_based.m20_piper.mdp.config import arm_joint_names
+        arm_ids, _ = asset.find_joints(arm_joint_names)
+        env._path_clear_arm_joint_ids = arm_ids  # type: ignore
+
+    arm_ids = env._path_clear_arm_joint_ids  # type: ignore
+
+    arm_dev = torch.norm(
+        asset.data.joint_pos[:, arm_ids] - asset.data.default_joint_pos[:, arm_ids],
+        dim=1,
+    )
+
+    base_speed = torch.norm(asset.data.root_lin_vel_w[:, :2], dim=1)
+    yaw_rate = torch.abs(asset.data.root_ang_vel_b[:, 2])
+
+    base_stopped = base_speed < stopped_speed
+    yaw_stopped = yaw_rate < stopped_yaw_rate
+    arm_active = arm_dev > min_arm_deviation
+
+    # Reward only on transition:
+    # previously blocked in arm zone, now not blocked.
+    cleared_now = prev_blocked & (~arm_zone_blocked)
+
+    # Additional guard: avoid rewarding if path is still blocked slightly farther ahead.
+    truly_clear = ~wider_path_blocked
+
+    return (
+        cleared_now.float()
+        * truly_clear.float()
+        * base_stopped.float()
+        * yaw_stopped.float()
+        * arm_active.float()
+    )

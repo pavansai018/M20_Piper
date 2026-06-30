@@ -395,3 +395,180 @@ def arm_joint_vel_obs(
 
     arm_ids = env._obs_arm_vel_joint_ids # type: ignore
     return asset.data.joint_vel[:, arm_ids]
+
+def _lidar_points_local_xy(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    obstacle_name: str = "obstacle",
+    num_rays: int = 181,
+    fov_deg: float = 270.0,
+    max_range: float = 5.0,
+    lidar_x: float = 0.37,
+    lidar_z: float = 0.05,
+    lidar_pitch_deg: float = -7.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Convert LiDAR scan ranges into local-env-frame XY points.
+
+    Sim:
+        front_lidar_scan_obs generates synthetic ranges.
+
+    Real deployment:
+        replace front_lidar_scan_obs() internals with /scan preprocessing.
+        This function should still receive the same range vector.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    ranges = front_lidar_scan_obs(
+        env,
+        asset_cfg=asset_cfg,
+        obstacle_name=obstacle_name,
+        num_rays=num_rays,
+        fov_deg=fov_deg,
+        max_range=max_range,
+        lidar_x=lidar_x,
+        lidar_z=lidar_z,
+        lidar_pitch_deg=lidar_pitch_deg,
+        normalize=False,
+    )
+
+    robot_xy_local = asset.data.root_pos_w[:, :2] - env.scene.env_origins[:, :2]
+
+    quat = asset.data.root_quat_w
+    w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+    yaw = torch.atan2(
+        2.0 * (w * z + x * y),
+        1.0 - 2.0 * (y * y + z * z),
+    )
+
+    angles = torch.linspace(
+        -0.5 * fov_deg,
+        0.5 * fov_deg,
+        num_rays,
+        device=env.device,
+    )
+
+    ray_yaw = yaw.unsqueeze(1) + torch.deg2rad(angles).unsqueeze(0)
+
+    pitch = math.radians(lidar_pitch_deg)
+    cp = math.cos(pitch)
+
+    lidar_origin_xy = torch.stack(
+        [
+            robot_xy_local[:, 0] + lidar_x * torch.cos(yaw),
+            robot_xy_local[:, 1] + lidar_x * torch.sin(yaw),
+        ],
+        dim=1,
+    )
+
+    points_xy = torch.stack(
+        [
+            lidar_origin_xy[:, 0:1] + ranges * cp * torch.cos(ray_yaw),
+            lidar_origin_xy[:, 1:2] + ranges * cp * torch.sin(ray_yaw),
+        ],
+        dim=-1,
+    )
+
+    valid = ranges < (max_range * 0.999)
+
+    return points_xy, valid
+
+def lidar_path_corridor_blocked(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    obstacle_name: str = "obstacle",
+    num_rays: int = 181,
+    fov_deg: float = 270.0,
+    max_range: float = 5.0,
+    min_ahead_m: float = 0.30,
+    max_ahead_m: float = 3.00,
+    corridor_half_width: float = 0.30,
+    path_window_points: int = 48,
+) -> torch.Tensor:
+    """Return True if LiDAR sees an obstacle inside the upcoming path corridor.
+
+    This is the correct deployable condition:
+        scan return inside future path corridor -> path is blocked
+
+    It catches early bypass attempts because the obstacle can be side/front/angled
+    relative to the robot, but still inside the global path corridor.
+    """
+    e: Any = env
+
+    if not hasattr(e, "navrl_global_path_xy"):
+        return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+
+    scan_xy, valid_scan = _lidar_points_local_xy(
+        env,
+        asset_cfg=asset_cfg,
+        obstacle_name=obstacle_name,
+        num_rays=num_rays,
+        fov_deg=fov_deg,
+        max_range=max_range,
+    )
+
+    path = e.navrl_global_path_xy
+    valid = e.navrl_path_valid_count
+    arc = e.navrl_arc_length
+
+    nearest = _nearest_path_index(e)
+
+    offsets = torch.arange(path_window_points, device=env.device).unsqueeze(0)
+    idx = nearest.unsqueeze(1) + offsets
+    idx = torch.minimum(idx, (valid - 1).clamp(min=0).unsqueeze(1))
+
+    idx_exp = idx.unsqueeze(-1).expand(-1, -1, 2)
+    path_win = path.gather(1, idx_exp)
+
+    arc_win = arc.gather(1, idx)
+    robot_arc = arc.gather(1, nearest.unsqueeze(1)).squeeze(1)
+    ahead = arc_win - robot_arc.unsqueeze(1)
+
+    path_mask = (ahead >= min_ahead_m) & (ahead <= max_ahead_m)
+
+    # [N, R, P, 2]
+    diff = scan_xy.unsqueeze(2) - path_win.unsqueeze(1)
+    dist = torch.norm(diff, dim=-1)
+
+    hit = (
+        valid_scan.unsqueeze(2)
+        & path_mask.unsqueeze(1)
+        & (dist < corridor_half_width)
+    )
+
+    return hit.any(dim=(1, 2))
+
+def path_corridor_blocked_obs(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    obstacle_name: str = "obstacle",
+    min_ahead_m: float = 0.30,
+    max_ahead_m: float = 3.00,
+    corridor_half_width: float = 0.30,
+) -> torch.Tensor:
+    blocked = lidar_path_corridor_blocked(
+        env,
+        asset_cfg=asset_cfg,
+        obstacle_name=obstacle_name,
+        min_ahead_m=min_ahead_m,
+        max_ahead_m=max_ahead_m,
+        corridor_half_width=corridor_half_width,
+    )
+    return blocked.float().unsqueeze(1)
+
+def arm_reach_path_blocked_obs(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    obstacle_name: str = "obstacle",
+    arm_min_m: float = 0.25,
+    arm_max_m: float = 1.10,
+    corridor_half_width: float = 0.30,
+) -> torch.Tensor:
+    blocked = lidar_path_corridor_blocked(
+        env,
+        asset_cfg=asset_cfg,
+        obstacle_name=obstacle_name,
+        min_ahead_m=arm_min_m,
+        max_ahead_m=arm_max_m,
+        corridor_half_width=corridor_half_width,
+    )
+    return blocked.float().unsqueeze(1)
