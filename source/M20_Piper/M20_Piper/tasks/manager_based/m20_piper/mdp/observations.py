@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import torch
-
+import math
 from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
 
@@ -381,5 +381,50 @@ def front_lidar_blocked_obs(
 
     center_min = torch.min(center_ranges, dim=1).values
     blocked = center_min < trigger_range
+
+    return blocked.float().unsqueeze(1)
+
+def lidar_sector_blocked_obs(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    obstacle_name: str = "obstacle",
+    num_rays: int = 181,
+    fov_deg: float = 270.0,
+    max_range: float = 5.0,
+    trigger_range: float = 1.50,
+    sector_center_deg: float = 0.0,
+    sector_half_width_deg: float = 20.0,
+) -> torch.Tensor:
+    """Return 1 if LiDAR sector is blocked.
+
+    sector_center_deg=0 means straight ahead.
+    sector_half_width_deg=20 means front ±20°.
+    """
+    ranges = front_lidar_scan_obs(
+        env,
+        asset_cfg=asset_cfg,
+        obstacle_name=obstacle_name,
+        num_rays=num_rays,
+        fov_deg=fov_deg,
+        max_range=max_range,
+        normalize=False,
+    )
+
+    angles = torch.linspace(
+        -0.5 * fov_deg,
+        0.5 * fov_deg,
+        num_rays,
+        device=env.device,
+    )
+
+    sector_mask = (
+        torch.abs(angles - sector_center_deg) <= sector_half_width_deg
+    )
+
+    if not torch.any(sector_mask):
+        return torch.zeros(env.num_envs, 1, device=env.device)
+
+    sector_min = torch.min(ranges[:, sector_mask], dim=1).values
+    blocked = sector_min < trigger_range
 
     return blocked.float().unsqueeze(1)

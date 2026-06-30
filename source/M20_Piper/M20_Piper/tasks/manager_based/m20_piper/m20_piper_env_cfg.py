@@ -190,8 +190,8 @@ class ObservationsCfg:
             params={
                 "asset_cfg": SceneEntityCfg("robot"),
                 "obstacle_name": "obstacle",
-                "num_rays": 31,
-                "fov_deg": 80.0,
+                "num_rays": 181,
+                "fov_deg": 27.0,
                 "max_range": 5.0,
                 "normalize": True,
             },
@@ -200,11 +200,32 @@ class ObservationsCfg:
         )
 
         front_blocked = ObsTerm(
-            func=mdp.front_lidar_blocked_obs,
+            func=mdp.lidar_sector_blocked_obs,
             params={
-                "trigger_range": 1.50,
+                "asset_cfg": SceneEntityCfg("robot"),
+                "obstacle_name": "obstacle",
+                "num_rays": 181,
+                "fov_deg": 270.0,
                 "max_range": 5.0,
-                "center_width": 7,
+                "trigger_range": 1.50,
+                "sector_center_deg": 0.0,
+                "sector_half_width_deg": 20.0,
+            },
+            clip=(0.0, 1.0),
+            scale=1.0,
+        )
+
+        wide_blocked = ObsTerm(
+            func=mdp.lidar_sector_blocked_obs,
+            params={
+                "asset_cfg": SceneEntityCfg("robot"),
+                "obstacle_name": "obstacle",
+                "num_rays": 181,
+                "fov_deg": 270.0,
+                "max_range": 5.0,
+                "trigger_range": 1.75,
+                "sector_center_deg": 0.0,
+                "sector_half_width_deg": 120.0,
             },
             clip=(0.0, 1.0),
             scale=1.0,
@@ -280,8 +301,8 @@ class ObservationsCfg:
             params={
                 "asset_cfg": SceneEntityCfg("robot"),
                 "obstacle_name": "obstacle",
-                "num_rays": 31,
-                "fov_deg": 80.0,
+                "num_rays": 181,
+                "fov_deg": 270.0,
                 "max_range": 5.0,
                 "normalize": True,
             },
@@ -290,11 +311,32 @@ class ObservationsCfg:
         )
 
         front_blocked = ObsTerm(
-            func=mdp.front_lidar_blocked_obs,
+            func=mdp.lidar_sector_blocked_obs,
             params={
-                "trigger_range": 1.50,
+                "asset_cfg": SceneEntityCfg("robot"),
+                "obstacle_name": "obstacle",
+                "num_rays": 181,
+                "fov_deg": 270.0,
                 "max_range": 5.0,
-                "center_width": 7,
+                "trigger_range": 1.50,
+                "sector_center_deg": 0.0,
+                "sector_half_width_deg": 20.0,
+            },
+            clip=(0.0, 1.0),
+            scale=1.0,
+        )
+
+        wide_blocked = ObsTerm(
+            func=mdp.lidar_sector_blocked_obs,
+            params={
+                "asset_cfg": SceneEntityCfg("robot"),
+                "obstacle_name": "obstacle",
+                "num_rays": 181,
+                "fov_deg": 270.0,
+                "max_range": 5.0,
+                "trigger_range": 1.75,
+                "sector_center_deg": 0.0,
+                "sector_half_width_deg": 120.0,
             },
             clip=(0.0, 1.0),
             scale=1.0,
