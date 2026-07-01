@@ -538,15 +538,52 @@ class RewardsCfg:
     upward = RewTerm(func=mdp.upward, weight=1.0)
 
 
-    path_corridor_clearance = RewTerm(
-        func=mdp.path_corridor_clearance_reward,
-        weight=30.0,
+    # path_corridor_clearance = RewTerm(
+    #     func=mdp.path_corridor_clearance_reward,
+    #     weight=30.0,
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         "obstacle_name": "obstacle",
+    #         "min_arm_deviation": 0.10,
+    #         "stopped_speed": 0.06,
+    #         "stopped_yaw_rate": 0.12,
+    #     },
+    # )
+
+    # Teach the PPO arm action to extend and sweep.
+    stage2_extend_sweep_action = RewTerm(
+        func=mdp.stage2_extend_sweep_action_reward,
+        weight=1.5,
+        params={
+            "reach_start_step": 5,
+            "sweep_start_step": 35,
+        },
+    )
+
+    # Dense physical reward: obstacle moved sideways this step.
+    stage2_obstacle_lateral_progress = RewTerm(
+        func=mdp.stage2_obstacle_lateral_progress_reward,
+        weight=80.0,
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "obstacle_name": "obstacle",
-            "min_arm_deviation": 0.10,
-            "stopped_speed": 0.06,
-            "stopped_yaw_rate": 0.12,
+            "min_ahead_m": 0.10,
+            "max_ahead_m": 1.50,
+            "max_step_progress": 0.015,
+        },
+    )
+
+    # Dense physical reward: obstacle is farther from path centerline.
+    stage2_obstacle_lateral_distance = RewTerm(
+        func=mdp.stage2_obstacle_lateral_distance_reward,
+        weight=8.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "obstacle_name": "obstacle",
+            "min_ahead_m": 0.10,
+            "max_ahead_m": 1.50,
+            "start_width": 0.03,
+            "target_width": 0.55,
         },
     )
 

@@ -479,136 +479,185 @@ def front_blocked_persistence_penalty(
     return (center_min < trigger_range).float()
 
 
-def stop_when_front_blocked_penalty(
+def stage2_extend_sweep_action_reward(
     env: ManagerBasedRLEnv,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    obstacle_name: str = "obstacle",
-    trigger_range: float = 1.50,
-    max_range: float = 5.0,
+    reach_start_step: int = 5,
+    sweep_start_step: int = 35,
 ) -> torch.Tensor:
-    """Penalize base motion when the front LiDAR sector is blocked.
+    """Stage 2 action-shaping reward.
 
-    This teaches:
-        obstacle in front -> stop base
+    Your Stage 2 action layout is:
+        action[0:4]  = wheels
+        action[4:10] = PiperSweepAction raw arm action
+
+    PiperSweepAction arm meaning:
+        arm_action[0] = extend/retract
+        arm_action[1] = sweep amount/direction
+
+    This reward teaches:
+        early episode: extend arm
+        later episode: keep extended and sweep
     """
-    asset: Articulation = env.scene[asset_cfg.name]
+    actions = env.action_manager.action
 
-    center_min = _front_center_min_from_scan(
-        env,
-        asset_cfg=asset_cfg,
-        obstacle_name=obstacle_name,
-        max_range=max_range,
-    )
+    if actions.shape[1] < 10:
+        return torch.zeros(env.num_envs, device=env.device)
 
-    front_blocked = center_min < trigger_range
-    base_speed = torch.norm(asset.data.root_lin_vel_w[:, :2], dim=1)
+    arm = torch.clamp(actions[:, 4:10], -1.0, 1.0)
 
-    return front_blocked.float() * base_speed
+    extend = 0.5 * (arm[:, 0] + 1.0)      # [-1, 1] -> [0, 1]
+    sweep_mag = torch.abs(arm[:, 1])      # either left or right is okay
 
-def arm_home_when_clear_penalty(
-    env: ManagerBasedRLEnv,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    obstacle_name: str = "obstacle",
-    trigger_range: float = 1.50,
-    max_range: float = 5.0,
-) -> torch.Tensor:
-    """Penalize unnecessary arm movement when the front path is clear.
+    step = env.episode_length_buf
 
-    This teaches:
-        front clear -> keep arm near home
-    """
-    asset: Articulation = env.scene[asset_cfg.name]
+    reach_phase = (step >= reach_start_step) & (step < sweep_start_step)
+    sweep_phase = step >= sweep_start_step
 
-    center_min = _front_center_min_from_scan(
-        env,
-        asset_cfg=asset_cfg,
-        obstacle_name=obstacle_name,
-        max_range=max_range,
-    )
+    reach_reward = extend
 
-    front_clear = center_min >= trigger_range
-
-    if not hasattr(env, "_arm_home_penalty_joint_ids"):
-        from M20_Piper.tasks.manager_based.m20_piper.mdp.config import arm_joint_names
-        arm_ids, _ = asset.find_joints(arm_joint_names)
-        env._arm_home_penalty_joint_ids = arm_ids  # type: ignore
-
-    arm_ids = env._arm_home_penalty_joint_ids  # type: ignore
-
-    arm_deviation = torch.norm(
-        asset.data.joint_pos[:, arm_ids] - asset.data.default_joint_pos[:, arm_ids],
-        dim=1,
-    )
-
-    return front_clear.float() * arm_deviation
-
-def path_corridor_clearance_reward(
-    env: ManagerBasedRLEnv,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    obstacle_name: str = "obstacle",
-    min_arm_deviation: float = 0.10,
-    stopped_speed: float = 0.06,
-    stopped_yaw_rate: float = 0.12,
-) -> torch.Tensor:
-    """Reward arm only when it clears LiDAR obstacle from the path corridor."""
-    from .observations import lidar_path_corridor_blocked
-
-    asset: Articulation = env.scene[asset_cfg.name]
-
-    arm_zone_blocked = lidar_path_corridor_blocked(
-        env,
-        asset_cfg=asset_cfg,
-        obstacle_name=obstacle_name,
-        min_ahead_m=0.25,
-        max_ahead_m=1.10,
-        corridor_half_width=0.30,
-    )
-
-    wider_path_blocked = lidar_path_corridor_blocked(
-        env,
-        asset_cfg=asset_cfg,
-        obstacle_name=obstacle_name,
-        min_ahead_m=0.25,
-        max_ahead_m=1.60,
-        corridor_half_width=0.35,
-    )
-
-    if not hasattr(env, "_prev_arm_zone_blocked"):
-        env._prev_arm_zone_blocked = arm_zone_blocked.detach().clone()  # type: ignore
-
-    prev_blocked = env._prev_arm_zone_blocked  # type: ignore
-    env._prev_arm_zone_blocked = arm_zone_blocked.detach()  # type: ignore
-
-    if not hasattr(env, "_path_clear_arm_joint_ids"):
-        from M20_Piper.tasks.manager_based.m20_piper.mdp.config import arm_joint_names
-        arm_ids, _ = asset.find_joints(arm_joint_names)
-        env._path_clear_arm_joint_ids = arm_ids  # type: ignore
-
-    arm_ids = env._path_clear_arm_joint_ids  # type: ignore
-
-    arm_dev = torch.norm(
-        asset.data.joint_pos[:, arm_ids] - asset.data.default_joint_pos[:, arm_ids],
-        dim=1,
-    )
-
-    base_speed = torch.norm(asset.data.root_lin_vel_w[:, :2], dim=1)
-    yaw_rate = torch.abs(asset.data.root_ang_vel_b[:, 2])
-
-    base_stopped = base_speed < stopped_speed
-    yaw_stopped = yaw_rate < stopped_yaw_rate
-    arm_active = arm_dev > min_arm_deviation
-
-    # Reward only on transition:
-    # previously blocked in arm zone, now not blocked.
-    cleared_now = prev_blocked & (~arm_zone_blocked)
-
-    # Additional guard: avoid rewarding if path is still blocked slightly farther ahead.
-    truly_clear = ~wider_path_blocked
+    sweep_reward = 0.5 * extend + 0.5 * sweep_mag
 
     return (
-        cleared_now.float()
-        * truly_clear.float()
-        * base_stopped.float()
-        * yaw_stopped.float()
-        * arm_active.float()
+        reach_phase.float() * reach_reward
+        + sweep_phase.float() * sweep_reward
     )
+
+def _stage2_obstacle_lateral_from_path(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    obstacle_name: str,
+    min_ahead_m: float = 0.10,
+    max_ahead_m: float = 1.50,
+) -> torch.Tensor:
+    """Signed lateral distance of obstacle from nearby path corridor."""
+    if obstacle_name not in env.scene.rigid_objects:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    if not hasattr(env, "navrl_global_path_xy"):
+        return torch.zeros(env.num_envs, device=env.device)
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    obstacle = env.scene.rigid_objects[obstacle_name]
+
+    path = env.navrl_global_path_xy # type: ignore
+    valid = env.navrl_path_valid_count # type: ignore
+    arc = env.navrl_arc_length # type: ignore
+
+    robot_xy = asset.data.root_pos_w[:, :2] - env.scene.env_origins[:, :2]
+    obs_xy = obstacle.data.root_pos_w[:, :2] - env.scene.env_origins[:, :2]
+
+    n, p, _ = path.shape
+
+    idxs = torch.arange(p, device=env.device).unsqueeze(0).expand(n, -1)
+    valid_mask = idxs < valid.unsqueeze(1)
+
+    # Find robot path arc.
+    dist_robot = torch.norm(path - robot_xy.unsqueeze(1), dim=-1)
+    dist_robot = dist_robot.masked_fill(~valid_mask, 1e6)
+
+    robot_idx = torch.argmin(dist_robot, dim=1)
+    robot_arc = arc.gather(1, robot_idx.unsqueeze(1)).squeeze(1)
+
+    # Only inspect path near the Stage 2 obstacle zone.
+    ahead = arc - robot_arc.unsqueeze(1)
+    ahead_mask = (ahead >= min_ahead_m) & (ahead <= max_ahead_m) & valid_mask
+
+    dist_obs = torch.norm(path - obs_xy.unsqueeze(1), dim=-1)
+    dist_obs = dist_obs.masked_fill(~ahead_mask, 1e6)
+
+    obs_idx = torch.argmin(dist_obs, dim=1)
+
+    path_pt = path.gather(
+        1,
+        obs_idx.view(n, 1, 1).expand(-1, 1, 2),
+    ).squeeze(1)
+
+    prev_idx = torch.clamp(obs_idx - 1, min=0)
+    next_idx = torch.clamp(obs_idx + 1, max=p - 1)
+
+    prev_pt = path.gather(
+        1,
+        prev_idx.view(n, 1, 1).expand(-1, 1, 2),
+    ).squeeze(1)
+
+    next_pt = path.gather(
+        1,
+        next_idx.view(n, 1, 1).expand(-1, 1, 2),
+    ).squeeze(1)
+
+    tangent = next_pt - prev_pt
+    tangent = tangent / torch.norm(tangent, dim=-1, keepdim=True).clamp(min=1e-6)
+
+    normal = torch.stack([-tangent[:, 1], tangent[:, 0]], dim=-1)
+
+    signed_lateral = torch.sum((obs_xy - path_pt) * normal, dim=-1)
+
+    return signed_lateral
+
+def stage2_obstacle_lateral_progress_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    obstacle_name: str = "obstacle",
+    min_ahead_m: float = 0.10,
+    max_ahead_m: float = 1.50,
+    max_step_progress: float = 0.015,
+) -> torch.Tensor:
+    """Dense reward for pushing obstacle sideways.
+
+    This is the main reward that teaches:
+        obstacle should move laterally away from path.
+
+    It rewards increase in |lateral distance|.
+    """
+    lateral = _stage2_obstacle_lateral_from_path(
+        env,
+        asset_cfg=asset_cfg,
+        obstacle_name=obstacle_name,
+        min_ahead_m=min_ahead_m,
+        max_ahead_m=max_ahead_m,
+    )
+
+    abs_lat = torch.abs(lateral)
+
+    if not hasattr(env, "_stage2_prev_obs_abs_lat"):
+        env._stage2_prev_obs_abs_lat = abs_lat.detach().clone() # type: ignore
+
+    prev = env._stage2_prev_obs_abs_lat # type: ignore
+
+    reset_mask = env.episode_length_buf <= 1
+    prev = torch.where(reset_mask, abs_lat.detach(), prev)
+
+    progress = abs_lat - prev
+
+    env._stage2_prev_obs_abs_lat = abs_lat.detach() # type: ignore
+
+    return torch.clamp(progress, min=0.0, max=max_step_progress)
+
+def stage2_obstacle_lateral_distance_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    obstacle_name: str = "obstacle",
+    min_ahead_m: float = 0.10,
+    max_ahead_m: float = 1.50,
+    start_width: float = 0.03,
+    target_width: float = 0.55,
+) -> torch.Tensor:
+    """Dense reward for obstacle being outside the path corridor.
+
+    target_width should be approximately:
+        corridor_half_width + obstacle_half_width + margin
+        0.30 + 0.20 + 0.05 = 0.55
+    """
+    lateral = _stage2_obstacle_lateral_from_path(
+        env,
+        asset_cfg=asset_cfg,
+        obstacle_name=obstacle_name,
+        min_ahead_m=min_ahead_m,
+        max_ahead_m=max_ahead_m,
+    )
+
+    abs_lat = torch.abs(lateral)
+
+    score = (abs_lat - start_width) / max(target_width - start_width, 1e-6)
+
+    return torch.clamp(score, min=0.0, max=1.0)
