@@ -455,9 +455,9 @@ class EventCfg:
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "obstacle_name": "obstacle",
-            "x_min": 0.62,
-            "x_max": 0.68,
-            "y_noise": 0.03,
+            "x_min": 0.68,
+            "x_max": 0.72,
+            "y_noise": 0.02,
             "z_height": 0.25,
         },
     )
@@ -576,6 +576,20 @@ class TerminationsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=mdp.base_link_name),
             "threshold": 150.0,
             "settle_steps": 100,
+        },
+    )
+
+    non_arm_body_contact = DoneTerm(
+        func=mdp.illegal_contact_after_settle,
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=[
+                    r"^(?!.*(_wheel|arm_base_link|gripper_base|link[1-8])).*"
+                ],
+            ),
+            "threshold": 10.0,
+            "settle_steps": 20,
         },
     )
 
