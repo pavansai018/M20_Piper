@@ -36,17 +36,17 @@ class M20PiperSceneCfg(InteractiveSceneCfg):
 
     robot: ArticulationCfg = M20_PIPER_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")  # type: ignore
 
-    # obstacle = RigidObjectCfg(
-    #     prim_path="{ENV_REGEX_NS}/Obstacle",
-    #     spawn=sim_utils.CuboidCfg(
-    #         size=(0.4, 0.4, 0.5),
-    #         rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=False),
-    #         mass_props=sim_utils.MassPropertiesCfg(mass=1.5),
-    #         collision_props=sim_utils.CollisionPropertiesCfg(),
-    #         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.3, 0.0), roughness=0.6),
-    #     ),
-    #     init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.25)),
-    # )
+    obstacle = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Obstacle",
+        spawn=sim_utils.CuboidCfg(
+            size=(0.4, 0.4, 0.5),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=False),
+            mass_props=sim_utils.MassPropertiesCfg(mass=1.5),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.3, 0.0), roughness=0.6),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.25)),
+    )
 
     final_goal_marker = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/FinalGoalMarker",
@@ -103,7 +103,7 @@ class ActionsCfg:
     wheel_vel = mdp.JointVelocityActionCfg(
         asset_name="robot",
         joint_names=mdp.wheel_joint_names,
-        scale=3.0,
+        scale=0.0,
         use_default_offset=True,
         clip={".*": (-100.0, 100.0)},
         preserve_order=True,
@@ -122,12 +122,12 @@ class ActionsCfg:
         # Sweep target should be reachable:
         # joint1≈-0.9, joint2≈0.35, joint3≈-1.10, joint5≈0.80
         scale={
-            "joint1": 0.0,
-            "joint2": 0.0,
-            "joint3": 0.0,
-            "joint4": 0.0,
-            "joint5": 0.0,
-            "joint6": 0.0,
+            "joint1": 1.2,
+            "joint2": 0.5,
+            "joint3": 1.0,
+            "joint4": 1.2,
+            "joint5": 0.8,
+            "joint6": 1.20,
         },
 
         clip={
@@ -449,7 +449,18 @@ class EventCfg:
         },
     )
 
-
+    reset_stage2_obstacle = EventTerm(
+        func=mdp.reset_obstacle_stage2_arm_reach,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "obstacle_name": "obstacle",
+            "x_min": 0.62,
+            "x_max": 0.68,
+            "y_noise": 0.03,
+            "z_height": 0.25,
+        },
+    )
     # Path + obstacle debug visualisation
     draw_path_reset = EventTerm(
         func=mdp.draw_path_debug,
@@ -522,48 +533,28 @@ class RewardsCfg:
 
     upward = RewTerm(func=mdp.upward, weight=1.0)
 
-    # --- Path-following rewards ---
-    path_progress = RewTerm(
-        func=mdp.path_progress_unless_arm_reach_blocked,
-        weight=12.0,
+
+    path_corridor_clearance = RewTerm(
+        func=mdp.path_corridor_clearance_reward,
+        weight=30.0,
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "obstacle_name": "obstacle",
-            "max_step_reward": 0.025,
+            "min_arm_deviation": 0.10,
+            "stopped_speed": 0.06,
+            "stopped_yaw_rate": 0.12,
         },
     )
 
-    path_forward_velocity = RewTerm(
-        func=mdp.path_forward_velocity_unless_arm_reach_blocked,
-        weight=1.0,
-        params={
-            "asset_cfg": SceneEntityCfg("robot"),
-            "obstacle_name": "obstacle",
-            "lookahead": 4,
-            "max_speed": 0.35,
-        },
-    )
-
-    path_cte_penalty = RewTerm(
-        func=mdp.path_cross_track_penalty,
+    front_blocked_persistence = RewTerm(
+        func=mdp.front_blocked_persistence_penalty,
         weight=-2.0,
-        params={"asset_cfg": SceneEntityCfg("robot"), "lookahead": 4, "max_error": 1.0},
-    )
-    path_heading = RewTerm(
-        func=mdp.path_heading_alignment,
-        weight=2.0,
-        params={"asset_cfg": SceneEntityCfg("robot"), "lookahead": 4},
-    )
-
-    path_reverse_velocity_penalty = RewTerm(
-        func=mdp.path_reverse_velocity_penalty,
-        weight=-8.0,
-        params={"asset_cfg": SceneEntityCfg("robot"), "lookahead": 4, "max_speed": 1.0},
-    )
-    goal_reached = RewTerm(
-        func=mdp.goal_reached_bonus,
-        weight=1.0,
-        params={"asset_cfg": SceneEntityCfg("robot"), "threshold": 0.4, "bonus": 120.0},
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "obstacle_name": "obstacle",
+            "trigger_range": 1.50,
+            "max_range": 5.0,
+        },
     )
 
 
@@ -578,26 +569,13 @@ class TerminationsCfg:
     #     params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=mdp.base_link_name), "threshold": 50.0},
     # )
     bad_orientation_2 = DoneTerm(func=mdp.bad_orientation_2)
-    goal_reached = DoneTerm(
-        func=mdp.goal_reached,
-        params={"asset_cfg": SceneEntityCfg("robot"), "threshold": 0.4},
-    )
+
     illegal_contact = DoneTerm(
         func=mdp.illegal_contact_after_settle,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=mdp.base_link_name),
             "threshold": 150.0,
             "settle_steps": 100,
-        },
-    )
-
-    path_deviation = DoneTerm(
-        func=mdp.path_deviation_too_large,
-        params={
-            "asset_cfg": SceneEntityCfg("robot"),
-            "lookahead": 4,
-            "max_cte": 1.25,
-            "settle_steps": 30,
         },
     )
 
