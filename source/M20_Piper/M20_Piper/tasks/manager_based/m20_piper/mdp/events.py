@@ -738,3 +738,59 @@ def hard_lock_leg_joints_to_home(
         joint_ids=leg_ids,
         env_ids=env_ids, # type: ignore
     )
+def reset_obstacle_stage2_arm_reach(
+    env: "ManagerBasedRLEnv",
+    env_ids: torch.Tensor,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    obstacle_name: str = "obstacle",
+    x_min: float = 0.48,
+    x_max: float = 0.56,
+    y_noise: float = 0.03,
+    z: float = 0.25,
+) -> None:
+    """Stage 2 obstacle reset.
+
+    Places obstacle directly in front of robot, inside Piper arm reach.
+    Robot wheels are frozen; arm must clear the obstacle.
+    """
+    if obstacle_name not in env.scene.rigid_objects:
+        return
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    obstacle = env.scene.rigid_objects[obstacle_name]
+
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device)
+
+    n = env_ids.numel()
+
+    robot_pos = asset.data.root_pos_w[env_ids]
+    robot_quat = asset.data.root_quat_w[env_ids]
+
+    w = robot_quat[:, 0]
+    x = robot_quat[:, 1]
+    y = robot_quat[:, 2]
+    zq = robot_quat[:, 3]
+
+    yaw = torch.atan2(
+        2.0 * (w * zq + x * y),
+        1.0 - 2.0 * (y * y + zq * zq),
+    )
+
+    x_b = x_min + (x_max - x_min) * torch.rand(n, device=env.device)
+    y_b = (2.0 * torch.rand(n, device=env.device) - 1.0) * y_noise
+
+    obs_x = robot_pos[:, 0] + x_b * torch.cos(yaw) - y_b * torch.sin(yaw)
+    obs_y = robot_pos[:, 1] + x_b * torch.sin(yaw) + y_b * torch.cos(yaw)
+
+    root_state = obstacle.data.root_state_w.clone()
+
+    root_state[env_ids, 0] = obs_x
+    root_state[env_ids, 1] = obs_y
+    root_state[env_ids, 2] = z
+
+    root_state[env_ids, 3] = 1.0
+    root_state[env_ids, 4:7] = 0.0
+    root_state[env_ids, 7:13] = 0.0
+
+    obstacle.write_root_state_to_sim(root_state[env_ids], env_ids=env_ids) # type: ignore
