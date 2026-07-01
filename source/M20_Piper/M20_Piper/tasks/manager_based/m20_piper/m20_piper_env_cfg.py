@@ -634,17 +634,6 @@ class TerminationsCfg:
         },
     )
 
-    stage2_obstacle_cleared = DoneTerm(
-        func=mdp.stage2_obstacle_cleared,
-        params={
-            "asset_cfg": SceneEntityCfg("robot"),
-            "obstacle_name": "obstacle",
-            "min_ahead_m": 0.25,
-            "max_ahead_m": 1.10,
-            "corridor_half_width": 0.30,
-            "settle_steps": 40,
-        },
-    )
 
 
 

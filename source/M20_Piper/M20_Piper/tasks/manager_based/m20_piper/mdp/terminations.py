@@ -172,33 +172,3 @@ def base_motion_when_arm_reach_blocked(
     base_moving = (xy_speed > max_xy_speed) | (yaw_rate > max_yaw_rate)
 
     return arm_zone_blocked & base_moving & (env.episode_length_buf > settle_steps)
-
-def stage2_obstacle_cleared(
-    env: ManagerBasedRLEnv,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    obstacle_name: str = "obstacle",
-    min_ahead_m: float = 0.25,
-    max_ahead_m: float = 1.10,
-    corridor_half_width: float = 0.30,
-    settle_steps: int = 40,
-) -> torch.Tensor:
-    """Stage 2 success: obstacle is no longer blocking the arm-reach path corridor.
-
-    This is not for full navigation.
-    This is only for arm-clearing stage:
-        base frozen
-        obstacle near robot
-        success = path corridor near arm is clear
-    """
-    from .observations import lidar_path_corridor_blocked
-
-    blocked = lidar_path_corridor_blocked(
-        env,
-        asset_cfg=asset_cfg,
-        obstacle_name=obstacle_name,
-        min_ahead_m=min_ahead_m,
-        max_ahead_m=max_ahead_m,
-        corridor_half_width=corridor_half_width,
-    )
-
-    return (~blocked) & (env.episode_length_buf > settle_steps)
