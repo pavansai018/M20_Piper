@@ -537,26 +537,15 @@ class RewardsCfg:
 
     upward = RewTerm(func=mdp.upward, weight=1.0)
 
-
-    # path_corridor_clearance = RewTerm(
-    #     func=mdp.path_corridor_clearance_reward,
-    #     weight=30.0,
-    #     params={
-    #         "asset_cfg": SceneEntityCfg("robot"),
-    #         "obstacle_name": "obstacle",
-    #         "min_arm_deviation": 0.10,
-    #         "stopped_speed": 0.06,
-    #         "stopped_yaw_rate": 0.12,
-    #     },
-    # )
-
-    # Teach the PPO arm action to extend and sweep.
-    stage2_extend_sweep_action = RewTerm(
-        func=mdp.stage2_extend_sweep_action_reward,
-        weight=1.5,
+    stage2_arm_pose_teacher = RewTerm(
+        func=mdp.stage2_arm_reach_then_sweep_pose_reward,
+        weight=15.0,
         params={
-            "reach_start_step": 5,
-            "sweep_start_step": 35,
+            "asset_cfg": SceneEntityCfg("robot"),
+            "joint_names": mdp.arm_joint_names,
+            "reach_steps": 45,
+            "sweep_steps": 90,
+            "pose_temperature": 0.35,
         },
     )
 
@@ -631,6 +620,17 @@ class TerminationsCfg:
             ),
             "threshold": 10.0,
             "settle_steps": 20,
+        },
+    )
+
+    base_motion_when_arm_reach_blocked = DoneTerm(
+        func=mdp.base_motion_when_arm_reach_blocked,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "obstacle_name": "obstacle",
+            "max_xy_speed": 0.04,
+            "max_yaw_rate": 0.06,
+            "settle_steps": 30,
         },
     )
 

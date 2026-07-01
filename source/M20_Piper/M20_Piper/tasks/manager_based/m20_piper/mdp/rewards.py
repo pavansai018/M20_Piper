@@ -478,50 +478,6 @@ def front_blocked_persistence_penalty(
     )
     return (center_min < trigger_range).float()
 
-
-def stage2_extend_sweep_action_reward(
-    env: ManagerBasedRLEnv,
-    reach_start_step: int = 5,
-    sweep_start_step: int = 35,
-) -> torch.Tensor:
-    """Stage 2 action-shaping reward.
-
-    Your Stage 2 action layout is:
-        action[0:4]  = wheels
-        action[4:10] = PiperSweepAction raw arm action
-
-    PiperSweepAction arm meaning:
-        arm_action[0] = extend/retract
-        arm_action[1] = sweep amount/direction
-
-    This reward teaches:
-        early episode: extend arm
-        later episode: keep extended and sweep
-    """
-    actions = env.action_manager.action
-
-    if actions.shape[1] < 10:
-        return torch.zeros(env.num_envs, device=env.device)
-
-    arm = torch.clamp(actions[:, 4:10], -1.0, 1.0)
-
-    extend = 0.5 * (arm[:, 0] + 1.0)      # [-1, 1] -> [0, 1]
-    sweep_mag = torch.abs(arm[:, 1])      # either left or right is okay
-
-    step = env.episode_length_buf
-
-    reach_phase = (step >= reach_start_step) & (step < sweep_start_step)
-    sweep_phase = step >= sweep_start_step
-
-    reach_reward = extend
-
-    sweep_reward = 0.5 * extend + 0.5 * sweep_mag
-
-    return (
-        reach_phase.float() * reach_reward
-        + sweep_phase.float() * sweep_reward
-    )
-
 def _stage2_obstacle_lateral_from_path(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg,
@@ -661,3 +617,71 @@ def stage2_obstacle_lateral_distance_reward(
     score = (abs_lat - start_width) / max(target_width - start_width, 1e-6)
 
     return torch.clamp(score, min=0.0, max=1.0)
+
+def stage2_arm_reach_then_sweep_pose_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    joint_names: list[str] | None = None,
+    reach_steps: int = 45,
+    sweep_steps: int = 90,
+    pose_temperature: float = 0.35,
+) -> torch.Tensor:
+    """Teach the actual Piper arm joints to reach forward first, then sweep.
+
+    This rewards real joint positions, not just PPO raw actions.
+
+    Stage 2 sequence:
+        step 0..reach_steps:
+            move arm to reach_pose
+
+        step reach_steps..sweep_steps:
+            interpolate from reach_pose to sweep_pose
+
+        after sweep_steps:
+            hold sweep_pose
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    if joint_names is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    cache_name = "_stage2_arm_pose_teacher_joint_ids"
+
+    if not hasattr(env, cache_name):
+        joint_ids, joint_names_found = asset.find_joints(joint_names)
+        if len(joint_ids) != 6:
+            raise RuntimeError(
+                f"stage2_arm_reach_then_sweep_pose_reward expected 6 joints, "
+                f"got {len(joint_ids)}: {joint_names_found}"
+            )
+        setattr(env, cache_name, joint_ids)
+
+    joint_ids = getattr(env, cache_name)
+    arm_pos = asset.data.joint_pos[:, joint_ids]
+
+    reach_pose = torch.tensor(
+        [0.0, 0.45, -1.05, 0.0, 0.75, 0.0],
+        device=env.device,
+        dtype=torch.float32,
+    ).view(1, 6)
+
+    sweep_pose = torch.tensor(
+        [-0.85, 0.45, -1.05, 0.0, 0.75, 0.0],
+        device=env.device,
+        dtype=torch.float32,
+    ).view(1, 6)
+
+    weights = torch.tensor(
+        [1.0, 1.0, 1.0, 0.20, 0.80, 0.20],
+        device=env.device,
+        dtype=torch.float32,
+    ).view(1, 6)
+
+    step = env.episode_length_buf.float()
+
+    alpha = ((step - float(reach_steps)) / max(float(sweep_steps - reach_steps), 1.0)).clamp(0.0, 1.0)
+    target = reach_pose + alpha.view(-1, 1) * (sweep_pose - reach_pose)
+
+    err = torch.norm((arm_pos - target) * weights, dim=1)
+
+    return torch.exp(-err / pose_temperature)
