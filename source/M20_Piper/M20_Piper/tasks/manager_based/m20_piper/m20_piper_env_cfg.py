@@ -109,35 +109,39 @@ class ActionsCfg:
         preserve_order=True,
     )
 
-    arm_pos = mdp.JointPositionActionCfg(
+    # arm_pos = mdp.JointPositionActionCfg(
+    #     asset_name="robot",
+    #     joint_names=mdp.arm_joint_names,
+    #     use_default_offset=True,
+    #     preserve_order=True,
+
+    #     # These are action-to-joint-position scales around default pose.
+    #     # Default arm pose from m20_piper.py:
+    #     # joint1=0.0, joint2=0.2, joint3=-0.35, joint4=0.0, joint5=0.2, joint6=0.0
+    #     #
+    #     # Sweep target should be reachable:
+    #     # joint1≈-0.9, joint2≈0.35, joint3≈-1.10, joint5≈0.80
+    #     scale={
+    #         "joint1": 1.2,
+    #         "joint2": 0.5,
+    #         "joint3": 1.0,
+    #         "joint4": 1.2,
+    #         "joint5": 0.8,
+    #         "joint6": 1.20,
+    #     },
+
+    #     clip={
+    #         "joint1": (-1.20, 1.20),
+    #         "joint2": (-1.00, 1.00),
+    #         "joint3": (-1.00, 1.00),
+    #         "joint4": (-1.00, 1.00),
+    #         "joint5": (-1.00, 1.00),
+    #         "joint6": (-1.00, 1.00),
+    #     },
+    # )
+    arm_pos = mdp.PiperSweepActionCfg(
         asset_name="robot",
         joint_names=mdp.arm_joint_names,
-        use_default_offset=True,
-        preserve_order=True,
-
-        # These are action-to-joint-position scales around default pose.
-        # Default arm pose from m20_piper.py:
-        # joint1=0.0, joint2=0.2, joint3=-0.35, joint4=0.0, joint5=0.2, joint6=0.0
-        #
-        # Sweep target should be reachable:
-        # joint1≈-0.9, joint2≈0.35, joint3≈-1.10, joint5≈0.80
-        scale={
-            "joint1": 1.2,
-            "joint2": 0.5,
-            "joint3": 1.0,
-            "joint4": 1.2,
-            "joint5": 0.8,
-            "joint6": 1.20,
-        },
-
-        clip={
-            "joint1": (-1.20, 1.20),
-            "joint2": (-1.00, 1.00),
-            "joint3": (-1.00, 1.00),
-            "joint4": (-1.00, 1.00),
-            "joint5": (-1.00, 1.00),
-            "joint6": (-1.00, 1.00),
-        },
     )
 
 
