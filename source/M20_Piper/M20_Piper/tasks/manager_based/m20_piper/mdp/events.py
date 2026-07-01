@@ -687,13 +687,9 @@ def reset_obstacle_stage2_arm_reach(
     x_min: float = 0.48,
     x_max: float = 0.56,
     y_noise: float = 0.03,
-    z: float = 0.25,
+    z_height: float = 0.25,
 ) -> None:
-    """Stage 2 obstacle reset.
-
-    Places obstacle directly in front of robot, inside Piper arm reach.
-    Robot wheels are frozen; arm must clear the obstacle.
-    """
+    """Stage 2: spawn obstacle in front of robot, inside arm reach."""
     if obstacle_name not in env.scene.rigid_objects:
         return
 
@@ -711,11 +707,11 @@ def reset_obstacle_stage2_arm_reach(
     w = robot_quat[:, 0]
     x = robot_quat[:, 1]
     y = robot_quat[:, 2]
-    zq = robot_quat[:, 3]
+    z = robot_quat[:, 3]
 
     yaw = torch.atan2(
-        2.0 * (w * zq + x * y),
-        1.0 - 2.0 * (y * y + zq * zq),
+        2.0 * (w * z + x * y),
+        1.0 - 2.0 * (y * y + z * z),
     )
 
     x_b = x_min + (x_max - x_min) * torch.rand(n, device=env.device)
@@ -725,11 +721,9 @@ def reset_obstacle_stage2_arm_reach(
     obs_y = robot_pos[:, 1] + x_b * torch.sin(yaw) + y_b * torch.cos(yaw)
 
     root_state = obstacle.data.root_state_w.clone()
-
     root_state[env_ids, 0] = obs_x
     root_state[env_ids, 1] = obs_y
-    root_state[env_ids, 2] = z
-
+    root_state[env_ids, 2] = z_height
     root_state[env_ids, 3] = 1.0
     root_state[env_ids, 4:7] = 0.0
     root_state[env_ids, 7:13] = 0.0
