@@ -62,12 +62,12 @@
       </geometry>
     </collision>
   </link>
-  <joint name="fl_hipx_joint" type="revolute">
+  <joint name="fl_hipx_joint" type="fixed">
     <origin xyz="0.3141 0.0685 0" rpy="0 0 0"/>
     <parent link="base_link"/>
     <child link="fl_hipx"/>
-    <axis xyz="-1 0 0"/>
-    <limit lower="-0.611" upper="0.436" effort="76.4" velocity="22.4"/>
+    <!-- <axis xyz="-1 0 0"/> -->
+    <!-- <limit lower="-0.611" upper="0.436" effort="76.4" velocity="22.4"/> -->
   </joint>
   <link name="fl_hipy">
     <inertial>
@@ -97,12 +97,12 @@
       </geometry>
     </collision>
   </link>
-  <joint name="fl_hipy_joint" type="revolute">
-    <origin xyz="0 0 0" rpy="0 0 0"/>
+  <joint name="fl_hipy_joint" type="fixed">
+    <origin xyz="0 0 0" rpy="0 0.70 0"/>
     <parent link="fl_hipx"/>
     <child link="fl_hipy"/>
-    <axis xyz="0 -1 0"/>
-    <limit lower="-2.583" upper="2.286" effort="76.4" velocity="22.4"/>
+    <!-- <axis xyz="0 -1 0"/> -->
+    <!-- <limit lower="-2.583" upper="2.286" effort="76.4" velocity="22.4"/> -->
   </joint>
   <link name="fl_knee">
     <inertial>
@@ -132,12 +132,12 @@
       </geometry>
     </collision>
   </link>
-  <joint name="fl_knee_joint" type="revolute">
-    <origin xyz="0 0.0984 -0.25" rpy="0 0 0"/>
+  <joint name="fl_knee_joint" type="fixed">
+    <origin xyz="0 0.0984 -0.25" rpy="0 -1.40 0"/>
     <parent link="fl_hipy"/>
     <child link="fl_knee"/>
-    <axis xyz="0 -1 0"/>
-    <limit lower="-2.792" upper="2.809" effort="76.4" velocity="22.4"/>
+    <!-- <axis xyz="0 -1 0"/> -->
+    <!-- <limit lower="-2.792" upper="2.809" effort="76.4" velocity="22.4"/> -->
   </joint>
   <link name="fl_wheel">
     <inertial>
@@ -190,12 +190,12 @@
       </geometry>
     </collision>
   </link>
-  <joint name="fr_hipx_joint" type="revolute">
+  <joint name="fr_hipx_joint" type="fixed">
     <origin xyz="0.3141 -0.0685 0" rpy="0 0 0"/>
     <parent link="base_link"/>
     <child link="fr_hipx"/>
-    <axis xyz="-1 0 0"/>
-    <limit lower="-0.436" upper="0.611" effort="76.4" velocity="22.4"/>
+    <!-- <axis xyz="-1 0 0"/> -->
+    <!-- <limit lower="-0.436" upper="0.611" effort="76.4" velocity="22.4"/> -->
   </joint>
   <link name="fr_hipy">
     <inertial>
@@ -225,12 +225,12 @@
       </geometry>
     </collision>
   </link>
-  <joint name="fr_hipy_joint" type="revolute">
-    <origin xyz="0 0 0" rpy="0 0 0"/>
+  <joint name="fr_hipy_joint" type="fixed">
+    <origin xyz="0 0 0" rpy="0 0.70 0"/>
     <parent link="fr_hipx"/>
     <child link="fr_hipy"/>
-    <axis xyz="0 -1 0"/>
-    <limit lower="-2.583" upper="2.286" effort="76.4" velocity="22.4"/>
+    <!-- <axis xyz="0 -1 0"/> -->
+    <!-- <limit lower="-2.583" upper="2.286" effort="76.4" velocity="22.4"/> -->
   </joint>
   <link name="fr_knee">
     <inertial>
@@ -260,12 +260,12 @@
       </geometry>
     </collision>
   </link>
-  <joint name="fr_knee_joint" type="revolute">
-    <origin xyz="0 -0.0984 -0.25" rpy="0 0 0"/>
+  <joint name="fr_knee_joint" type="fixed">
+    <origin xyz="0 -0.0984 -0.25" rpy="0 -1.40 0"/>
     <parent link="fr_hipy"/>
     <child link="fr_knee"/>
-    <axis xyz="0 -1 0"/>
-    <limit lower="-2.792" upper="2.809" effort="76.4" velocity="22.4"/>
+    <!-- <axis xyz="0 -1 0"/> -->
+    <!-- <limit lower="-2.792" upper="2.809" effort="76.4" velocity="22.4"/> -->
   </joint>
   <link name="fr_wheel">
     <inertial>
@@ -318,12 +318,12 @@
       </geometry>
     </collision>
   </link>
-  <joint name="hl_hipx_joint" type="revolute">
+  <joint name="hl_hipx_joint" type="fixed">
     <origin xyz="-0.3141 0.0685 0" rpy="0 0 0"/>
     <parent link="base_link"/>
     <child link="hl_hipx"/>
-    <axis xyz="-1 0 0"/>
-    <limit lower="-0.611" upper="0.436" effort="76.4" velocity="22.4"/>
+    <!-- <axis xyz="-1 0 0"/> -->
+    <!-- <limit lower="-0.611" upper="0.436" effort="76.4" velocity="22.4"/> -->
   </joint>
   <link name="hl_hipy">
     <inertial>
@@ -353,12 +353,12 @@
       </geometry>
     </collision>
   </link>
-  <joint name="hl_hipy_joint" type="revolute">
-    <origin xyz="0 0 0" rpy="0 0 0"/>
+  <joint name="hl_hipy_joint" type="fixed">
+    <origin xyz="0 0 0" rpy="0 -0.70 0"/>
     <parent link="hl_hipx"/>
     <child link="hl_hipy"/>
-    <axis xyz="0 -1 0"/>
-    <limit lower="-2.286" upper="2.583" effort="76.4" velocity="22.4"/>
+    <!-- <axis xyz="0 -1 0"/> -->
+    <!-- <limit lower="-2.286" upper="2.583" effort="76.4" velocity="22.4"/> -->
   </joint>
   <link name="hl_knee">
     <inertial>
@@ -388,12 +388,12 @@
       </geometry>
     </collision>
   </link>
-  <joint name="hl_knee_joint" type="revolute">
-    <origin xyz="0 0.0984 -0.25" rpy="0 0 0"/>
+  <joint name="hl_knee_joint" type="fixed">
+    <origin xyz="0 0.0984 -0.25" rpy="0 1.40 0"/>
     <parent link="hl_hipy"/>
     <child link="hl_knee"/>
-    <axis xyz="0 -1 0"/>
-    <limit lower="-2.809" upper="2.792" effort="76.4" velocity="22.4"/>
+    <!-- <axis xyz="0 -1 0"/> -->
+    <!-- <limit lower="-2.809" upper="2.792" effort="76.4" velocity="22.4"/> -->
   </joint>
   <link name="hl_wheel">
     <inertial>
@@ -446,12 +446,12 @@
       </geometry>
     </collision>
   </link>
-  <joint name="hr_hipx_joint" type="revolute">
+  <joint name="hr_hipx_joint" type="fixed">
     <origin xyz="-0.3141 -0.0685 0" rpy="0 0 0"/>
     <parent link="base_link"/>
     <child link="hr_hipx"/>
-    <axis xyz="-1 0 0"/>
-    <limit lower="-0.436" upper="0.611" effort="76.4" velocity="22.4"/>
+    <!-- <axis xyz="-1 0 0"/> -->
+    <!-- <limit lower="-0.436" upper="0.611" effort="76.4" velocity="22.4"/> -->
   </joint>
   <link name="hr_hipy">
     <inertial>
@@ -481,12 +481,12 @@
       </geometry>
     </collision>
   </link>
-  <joint name="hr_hipy_joint" type="revolute">
-    <origin xyz="0 0 0" rpy="0 0 0"/>
+  <joint name="hr_hipy_joint" type="fixed">
+    <origin xyz="0 0 0" rpy="0 -0.70 0"/>
     <parent link="hr_hipx"/>
     <child link="hr_hipy"/>
-    <axis xyz="0 -1 0"/>
-    <limit lower="-2.286" upper="2.583" effort="76.4" velocity="22.4"/>
+    <!-- <axis xyz="0 -1 0"/> -->
+    <!-- <limit lower="-2.286" upper="2.583" effort="76.4" velocity="22.4"/> -->
   </joint>
   <link name="hr_knee">
     <inertial>
@@ -516,12 +516,12 @@
       </geometry>
     </collision>
   </link>
-  <joint name="hr_knee_joint" type="revolute">
-    <origin xyz="0 -0.0984 -0.25" rpy="0 0 0"/>
+  <joint name="hr_knee_joint" type="fixed">
+    <origin xyz="0 -0.0984 -0.25" rpy="0 1.40 0"/>
     <parent link="hr_hipy"/>
     <child link="hr_knee"/>
-    <axis xyz="0 -1 0"/>
-    <limit lower="-2.809" upper="2.792" effort="76.4" velocity="22.4"/>
+    <!-- <axis xyz="0 -1 0"/> -->
+    <!-- <limit lower="-2.809" upper="2.792" effort="76.4" velocity="22.4"/> -->
   </joint>
   <link name="hr_wheel">
     <inertial>

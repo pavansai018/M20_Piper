@@ -678,66 +678,7 @@ def reset_obstacle_on_path(
 
     obstacle.write_root_state_to_sim(all_states[env_ids], env_ids=env_ids)  # type: ignore[arg-type]
 
-def hold_leg_home_position(
-    env: "ManagerBasedRLEnv",
-    env_ids: torch.Tensor,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> None:
-    """Hold hip/knee joints at default stance using position + zero velocity targets."""
-    e: Any = env
-    asset: Articulation = env.scene[asset_cfg.name]
 
-    if not hasattr(e, "_leg_home_joint_ids"):
-        from M20_Piper.tasks.manager_based.m20_piper.mdp.config import leg_joint_names
-        ids, _ = asset.find_joints(leg_joint_names)
-        e._leg_home_joint_ids = ids
-
-    leg_ids = e._leg_home_joint_ids
-
-    pos_target = asset.data.default_joint_pos[:, leg_ids]
-    vel_target = torch.zeros_like(pos_target)
-
-    asset.set_joint_position_target(pos_target, joint_ids=leg_ids)  # type: ignore[arg-type]
-    asset.set_joint_velocity_target(vel_target, joint_ids=leg_ids)  # type: ignore[arg-type]
-
-def hard_lock_leg_joints_to_home(
-    env: "ManagerBasedRLEnv",
-    env_ids: torch.Tensor,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> None:
-    """Hard-lock hip/knee joints to default stance.
-
-    This is for wheel-only Stage 1.
-    PPO still controls only wheel velocity and arm action dimension is preserved,
-    but leg DOFs are forced to default so the robot behaves as a wheeled base.
-    """
-    e: Any = env
-    asset: Articulation = env.scene[asset_cfg.name]
-
-    if not hasattr(e, "_hard_lock_leg_joint_ids"):
-        from M20_Piper.tasks.manager_based.m20_piper.mdp.config import leg_joint_names
-        leg_ids, _ = asset.find_joints(leg_joint_names)
-        e._hard_lock_leg_joint_ids = leg_ids
-
-    leg_ids = e._hard_lock_leg_joint_ids
-
-    if env_ids is None:
-        env_ids = torch.arange(env.num_envs, device=env.device)
-
-    pos_all = asset.data.default_joint_pos[:, leg_ids]
-    vel_all = torch.zeros_like(pos_all)
-
-    # Set controller targets.
-    asset.set_joint_position_target(pos_all, joint_ids=leg_ids)
-    asset.set_joint_velocity_target(vel_all, joint_ids=leg_ids)
-
-    # Hard overwrite simulated joint state for selected envs.
-    asset.write_joint_state_to_sim(
-        pos_all[env_ids],
-        vel_all[env_ids],
-        joint_ids=leg_ids,
-        env_ids=env_ids, # type: ignore
-    )
 def reset_obstacle_stage2_arm_reach(
     env: "ManagerBasedRLEnv",
     env_ids: torch.Tensor,
